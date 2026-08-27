@@ -21,6 +21,11 @@ const VERSION = "FINANZAS v1.0";
 const EMPRESA = "Parana Logistica";
 const EMPRESA_DISPLAY = "PL Offshore";
 
+// Las Edge Functions de Xubio identifican la empresa con este slug, distinto
+// del valor con el que estan grabadas las filas (ver EMPRESA arriba).
+// Convencion tomada de sync-productos-xubio en compras-app.
+const EMPRESA_XUBIO = "pl_offshore";
+
 const MONEDAS = ["USD", "ARS", "EUR"];
 const ESTADOS = ["abierto", "en_curso", "cerrado"];
 
@@ -54,7 +59,7 @@ const FORM_VACIO = {
 // para no pisar campos que administra projects-app.
 const CAMPOS_ESCRITURA = Object.keys(FORM_VACIO);
 
-const CENTRO_VACIO = { codigo: "", nombre: "", activo: true };
+const CENTRO_VACIO = { nombre: "", activo: true };
 
 const NAV = [
   {
@@ -180,7 +185,6 @@ const api = {
       .insert([
         {
           empresa: EMPRESA,
-          codigo: form.codigo?.trim() || null,
           nombre: form.nombre.trim(),
           activo: form.activo !== false,
         },
@@ -195,7 +199,6 @@ const api = {
     const { data, error } = await supabase
       .from("centros_costo")
       .update({
-        codigo: form.codigo?.trim() || null,
         nombre: form.nombre.trim(),
         activo: form.activo !== false,
       })
@@ -209,6 +212,19 @@ const api = {
   async borrarCentroCosto(id) {
     const { error } = await supabase.from("centros_costo").delete().eq("id", id);
     if (error) throw error;
+  },
+
+  // Dispara la Edge Function que espeja los centros de costo de Xubio.
+  // La funcion reconcilia por xubio_id y, si no lo encuentra, por nombre:
+  // asi las filas cargadas a mano reciben su xubio_id en lugar de duplicarse.
+  async syncCentrosCostoXubio(empresa = EMPRESA_XUBIO) {
+    const { data, error } = await supabase.functions.invoke(
+      "sync-centros-costo-xubio",
+      { body: { empresa } }
+    );
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    return data;
   },
 };
 
@@ -1121,6 +1137,7 @@ function PageCentrosCosto() {
   const [ok, setOk] = useState(null);
   const [editandoCentroId, setEditandoCentroId] = useState(null);
   const [form, setForm] = useState(CENTRO_VACIO);
+  const [sincronizando, setSincronizando] = useState(false);
 
   const load = useCallback(async () => {
     setCargando(true);
@@ -1143,6 +1160,37 @@ function PageCentrosCosto() {
   function cerrarForm() {
     setEditandoCentroId(null);
     setForm(CENTRO_VACIO);
+  }
+
+  async function sincronizar() {
+    setSincronizando(true);
+    setError(null);
+    setOk(null);
+    try {
+      const r = await api.syncCentrosCostoXubio();
+      const partes = [];
+      if (r?.creados) partes.push(r.creados + " nuevo(s)");
+      if (r?.vinculados) partes.push(r.vinculados + " vinculado(s) a Xubio");
+      if (r?.actualizados) partes.push(r.actualizados + " actualizado(s)");
+      setOk(
+        "Sincronizado con Xubio: " +
+          (partes.length ? partes.join(", ") : "sin cambios") +
+          ". Los nuevos entran inactivos: activalos para que aparezcan en el formulario de proyectos."
+      );
+      await load();
+    } catch (err) {
+      const msg = err?.message ?? String(err);
+      // La funcion todavia no esta desplegada en Supabase.
+      if (/Failed to send a request|not found|404/i.test(msg)) {
+        setError(
+          "Falta desplegar la Edge Function sync-centros-costo-xubio en Supabase. El codigo esta en supabase/functions/."
+        );
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setSincronizando(false);
+    }
   }
 
   async function guardar() {
@@ -1196,21 +1244,29 @@ function PageCentrosCosto() {
       <Note tipo="err">{error}</Note>
       <Note tipo="ok">{ok}</Note>
 
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          marginBottom: 16,
+        }}
+      >
+        <button
+          className="btn btn-ghost"
+          onClick={sincronizar}
+          disabled={sincronizando || guardando}
+          title="Trae los centros de costo desde Xubio, que es donde se crean"
+        >
+          {sincronizando ? "Sincronizando..." : "Sincronizar desde Xubio"}
+        </button>
+      </div>
+
       <div className="card">
         <div className="form-section">
           {editandoCentroId ? "Editar centro de costo" : "Nuevo centro de costo"}
         </div>
 
         <div className="form-grid">
-          <div className="fg">
-            <label htmlFor="cc-codigo">Código</label>
-            <input
-              id="cc-codigo"
-              value={form.codigo ?? ""}
-              onChange={set("codigo")}
-              placeholder="CC-001"
-            />
-          </div>
           <div className="fg" style={{ gridColumn: "span 2" }}>
             <label htmlFor="cc-nombre">Nombre</label>
             <input
@@ -1303,7 +1359,6 @@ function PageCentrosCosto() {
                         onClick={() => {
                           setEditandoCentroId(c.id);
                           setForm({
-                            codigo: c.codigo ?? "",
                             nombre: c.nombre ?? "",
                             activo: c.activo !== false,
                           });
