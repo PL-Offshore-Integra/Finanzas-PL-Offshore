@@ -54,10 +54,15 @@ const FORM_VACIO = {
 // para no pisar campos que administra projects-app.
 const CAMPOS_ESCRITURA = Object.keys(FORM_VACIO);
 
+const CENTRO_VACIO = { codigo: "", nombre: "", activo: true };
+
 const NAV = [
   {
     titulo: "Maestros",
-    items: [{ id: "proyectos", label: "Proyectos", icon: "folder" }],
+    items: [
+      { id: "proyectos", label: "Proyectos", icon: "folder" },
+      { id: "centros", label: "Centros de costo", icon: "tag" },
+    ],
   },
   {
     titulo: "Análisis",
@@ -70,6 +75,10 @@ const SECCIONES = {
     titulo: "Proyectos",
     sub: "Fuente de verdad del grupo. Los módulos leen únicamente el proyecto marcado como activo.",
   },
+  centros: {
+    titulo: "Centros de costo",
+    sub: "Lista maestra de centros de costo. Alimenta el campo Centro de costo del formulario de proyectos.",
+  },
   consolidado: {
     titulo: "Consolidado",
     sub: "Costos por módulo imputados al proyecto activo.",
@@ -80,6 +89,7 @@ const ICONS = {
   folder:
     "M3 6a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6L11.4 6H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z",
   chart: "M4 20V10M10 20V4M16 20v-7M22 20H2",
+  tag: "M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 3 12V4a1 1 0 0 1 1-1h8a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.6Z",
   panel: "M4 4h16v16H4V4Zm6 0v16",
 };
 
@@ -149,6 +159,57 @@ const api = {
       .eq("id", id);
     if (error) throw error;
   },
+
+  // --- Centros de costo ---------------------------------------
+  // Tabla maestra propia de Finanzas. Alimenta el campo Centro de costo.
+  // La columna xubio_id queda reservada para mapear contra Xubio.
+
+  async listCentrosCosto() {
+    const { data, error } = await supabase
+      .from("centros_costo")
+      .select("id, codigo, nombre, activo, xubio_id")
+      .eq("empresa", EMPRESA)
+      .order("nombre", { ascending: true });
+    if (error) throw error;
+    return data ?? [];
+  },
+
+  async crearCentroCosto(form) {
+    const { data, error } = await supabase
+      .from("centros_costo")
+      .insert([
+        {
+          empresa: EMPRESA,
+          codigo: form.codigo?.trim() || null,
+          nombre: form.nombre.trim(),
+          activo: form.activo !== false,
+        },
+      ])
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+
+  async actualizarCentroCosto(id, form) {
+    const { data, error } = await supabase
+      .from("centros_costo")
+      .update({
+        codigo: form.codigo?.trim() || null,
+        nombre: form.nombre.trim(),
+        activo: form.activo !== false,
+      })
+      .eq("id", id)
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+
+  async borrarCentroCosto(id) {
+    const { error } = await supabase.from("centros_costo").delete().eq("id", id);
+    if (error) throw error;
+  },
 };
 
 // ============================================================
@@ -207,6 +268,10 @@ function mensajeError(err) {
   if (msg.includes("ux_proyectos_codigo")) return "Ese código de proyecto ya existe.";
   if (msg.includes("fin_set_proyecto_visible"))
     return "Falta crear la función fin_set_proyecto_visible en Supabase.";
+  if (msg.includes("ux_centros_costo_nombre"))
+    return "Ya existe un centro de costo con ese nombre.";
+  if (msg.includes("centros_costo"))
+    return "Falta crear la tabla centros_costo en Supabase. Corré sql/centros_costo.sql.";
   if (msg.includes("violates foreign key"))
     return "El proyecto tiene registros asociados. Cerralo en lugar de borrarlo.";
   return msg;
@@ -551,8 +616,26 @@ function LoginPage() {
   );
 }
 
-function ProyectoForm({ form, setForm, editando, onGuardar, onCancelar, guardando }) {
+function ProyectoForm({
+  form,
+  setForm,
+  editando,
+  onGuardar,
+  onCancelar,
+  guardando,
+  centros,
+  centrosOk,
+}) {
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  // Opciones del desplegable: los centros activos, mas el valor que el proyecto
+  // ya tenga cargado, para no perder un centro viejo o desactivado al editar.
+  const opcionesCentro = useMemo(() => {
+    const activos = (centros ?? []).filter((c) => c.activo).map((c) => c.nombre);
+    const actual = form.centro_costo?.trim();
+    if (actual && !activos.includes(actual)) return [actual, ...activos];
+    return activos;
+  }, [centros, form.centro_costo]);
 
   return (
     <div className="card">
@@ -585,12 +668,27 @@ function ProyectoForm({ form, setForm, editando, onGuardar, onCancelar, guardand
         </div>
         <div className="fg">
           <label htmlFor="f-cc">Centro de costo</label>
-          <input
-            id="f-cc"
-            value={form.centro_costo ?? ""}
-            onChange={set("centro_costo")}
-            placeholder="Golondrina de Mar"
-          />
+          {centrosOk ? (
+            <select
+              id="f-cc"
+              value={form.centro_costo ?? ""}
+              onChange={set("centro_costo")}
+            >
+              <option value="">Sin asignar</option>
+              {opcionesCentro.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              id="f-cc"
+              value={form.centro_costo ?? ""}
+              onChange={set("centro_costo")}
+              placeholder="Golondrina de Mar"
+            />
+          )}
         </div>
 
         <div className="fg">
@@ -765,6 +863,8 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
   const [ok, setOk] = useState(null);
   const [editandoId, setEditandoId] = useState(null);
   const [form, setForm] = useState(FORM_VACIO);
+  const [centros, setCentros] = useState([]);
+  const [centrosOk, setCentrosOk] = useState(false);
 
   const load = useCallback(async () => {
     setCargando(true);
@@ -772,6 +872,15 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
     try {
       const data = await api.listProyectos();
       setProyectos(data);
+      try {
+        setCentros(await api.listCentrosCosto());
+        setCentrosOk(true);
+      } catch {
+        // Si la tabla centros_costo no existe, el campo sigue siendo texto libre
+        // y el modulo funciona igual que antes.
+        setCentros([]);
+        setCentrosOk(false);
+      }
     } catch (err) {
       setError(mensajeError(err));
     } finally {
@@ -964,6 +1073,8 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
         <ProyectoForm
           form={form}
           setForm={setForm}
+          centros={centros}
+          centrosOk={centrosOk}
           editando={Boolean(editandoId)}
           onGuardar={guardar}
           onCancelar={cerrarForm}
@@ -999,6 +1110,226 @@ function PageConsolidado() {
         Compras, Víveres, Reparaciones y HSQE contra el proyecto activo.
       </div>
     </div>
+  );
+}
+
+function PageCentrosCosto() {
+  const [centros, setCentros] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState(null);
+  const [ok, setOk] = useState(null);
+  const [editandoCentroId, setEditandoCentroId] = useState(null);
+  const [form, setForm] = useState(CENTRO_VACIO);
+
+  const load = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      setCentros(await api.listCentrosCosto());
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  function cerrarForm() {
+    setEditandoCentroId(null);
+    setForm(CENTRO_VACIO);
+  }
+
+  async function guardar() {
+    if (!form.nombre?.trim()) {
+      setError("El nombre del centro de costo es obligatorio.");
+      return;
+    }
+    setGuardando(true);
+    setError(null);
+    try {
+      if (editandoCentroId) {
+        await api.actualizarCentroCosto(editandoCentroId, form);
+        setOk("Centro de costo actualizado.");
+      } else {
+        await api.crearCentroCosto(form);
+        setOk("Centro de costo agregado.");
+      }
+      cerrarForm();
+      await load();
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  async function borrar(c) {
+    const confirmado = window.confirm(
+      "¿Borrar el centro de costo " +
+        c.nombre +
+        "? Los proyectos que ya lo tengan asignado conservan el texto."
+    );
+    if (!confirmado) return;
+    setGuardando(true);
+    setError(null);
+    try {
+      await api.borrarCentroCosto(c.id);
+      setOk("Centro de costo borrado.");
+      await load();
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  const activos = centros.filter((c) => c.activo).length;
+
+  return (
+    <>
+      <Note tipo="err">{error}</Note>
+      <Note tipo="ok">{ok}</Note>
+
+      <div className="card">
+        <div className="form-section">
+          {editandoCentroId ? "Editar centro de costo" : "Nuevo centro de costo"}
+        </div>
+
+        <div className="form-grid">
+          <div className="fg">
+            <label htmlFor="cc-codigo">Código</label>
+            <input
+              id="cc-codigo"
+              value={form.codigo ?? ""}
+              onChange={set("codigo")}
+              placeholder="CC-001"
+            />
+          </div>
+          <div className="fg" style={{ gridColumn: "span 2" }}>
+            <label htmlFor="cc-nombre">Nombre</label>
+            <input
+              id="cc-nombre"
+              value={form.nombre ?? ""}
+              onChange={set("nombre")}
+              placeholder="Golondrina de Mar"
+            />
+          </div>
+          <div className="fg">
+            <label htmlFor="cc-estado">Estado</label>
+            <select
+              id="cc-estado"
+              value={form.activo === false ? "no" : "si"}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, activo: e.target.value === "si" }))
+              }
+            >
+              <option value="si">Activo</option>
+              <option value="no">Inactivo</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="form-ftr">
+          {editandoCentroId && (
+            <button className="btn btn-ghost" onClick={cerrarForm} disabled={guardando}>
+              Cancelar
+            </button>
+          )}
+          <button className="btn btn-primary" onClick={guardar} disabled={guardando}>
+            {guardando
+              ? "Guardando..."
+              : editandoCentroId
+                ? "Guardar cambios"
+                : "Agregar"}
+          </button>
+        </div>
+      </div>
+
+      {!cargando && centros.length > 0 && (
+        <Note tipo="info">
+          {activos} de {centros.length} centros activos. Solo los activos aparecen en
+          el formulario de proyectos.
+        </Note>
+      )}
+
+      {cargando ? (
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Cargando</div>
+          </div>
+        </div>
+      ) : !centros.length ? (
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Sin centros de costo</div>
+            Agregá el primero para que aparezca en el formulario de proyectos.
+          </div>
+        </div>
+      ) : (
+        <div className="card card-pad0">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Código</th>
+                  <th>Nombre</th>
+                  <th>Estado</th>
+                  <th>Xubio</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {centros.map((c) => (
+                  <tr key={c.id}>
+                    <td className="td-mono">{c.codigo ?? "—"}</td>
+                    <td>{c.nombre}</td>
+                    <td>
+                      <span
+                        className={`badge ${c.activo ? "b-teal" : "b-gray"}`}
+                      >
+                        {c.activo ? "Activo" : "Inactivo"}
+                      </span>
+                    </td>
+                    <td className="td-mono">{c.xubio_id ?? "—"}</td>
+                    <td className="td-actions">
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => {
+                          setEditandoCentroId(c.id);
+                          setForm({
+                            codigo: c.codigo ?? "",
+                            nombre: c.nombre ?? "",
+                            activo: c.activo !== false,
+                          });
+                          setError(null);
+                          setOk(null);
+                        }}
+                        disabled={guardando}
+                      >
+                        Editar
+                      </button>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => borrar(c)}
+                        disabled={guardando}
+                      >
+                        Borrar
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1219,6 +1550,7 @@ export default function App() {
                 setFormAbierto={setFormAbierto}
               />
             )}
+            {page === "centros" && <PageCentrosCosto />}
             {page === "consolidado" && <PageConsolidado />}
           </div>
         </div>
