@@ -76,7 +76,7 @@ const NAV = [
 const SECCIONES = {
   proyectos: {
     titulo: "Proyectos",
-    sub: "Fuente de verdad del grupo. Los módulos leen únicamente el proyecto marcado como activo.",
+    sub: "Fuente de verdad del grupo. Los proyectos que publiques acá son los que pueden elegir los demás módulos.",
   },
   centros: {
     titulo: "Centros de costo",
@@ -149,9 +149,18 @@ const api = {
     if (error) throw error;
   },
 
-  // RPC atómica: apaga el visible anterior y prende este en una transacción.
+  // Publicar a los módulos.
+  //
+  // Antes esto era una RPC exclusiva (fin_set_proyecto_visible) porque solo
+  // podía haber UN proyecto publicado a la vez, y la función apagaba el
+  // anterior en la misma transacción. Ahora pueden estar publicados todos los
+  // que hagan falta —los otros módulos necesitan una lista para armar el
+  // desplegable de Proyecto, no un único valor— así que alcanza un update.
   async marcarVisible(id) {
-    const { error } = await supabase.rpc("fin_set_proyecto_visible", { p_id: id });
+    const { error } = await supabase
+      .from("proyectos")
+      .update({ visible_modulos: true })
+      .eq("id", id);
     if (error) throw error;
   },
 
@@ -258,11 +267,11 @@ function validar(form) {
 
 function mensajeError(err) {
   const msg = err?.message ?? String(err ?? "Error desconocido");
+  // Este índice permitía un solo proyecto publicado a la vez. Si el error
+  // sigue apareciendo, es que falta correr el SQL que lo elimina.
   if (msg.includes("ux_proyectos_un_visible"))
-    return "Ya hay otro proyecto activo. Quitale el estado activo primero.";
+    return "La base todavía permite un solo proyecto publicado. Corré sql/proyectos_publicados.sql.";
   if (msg.includes("ux_proyectos_codigo")) return "Ese código de proyecto ya existe.";
-  if (msg.includes("fin_set_proyecto_visible"))
-    return "Falta crear la función fin_set_proyecto_visible en Supabase.";
   if (msg.includes("ux_centros_costo_nombre"))
     return "Ya existe un centro de costo con ese nombre.";
   if (msg.includes("centros_costo"))
@@ -808,7 +817,7 @@ function TablaProyectos({ proyectos, onEditar, onBorrar, onToggleVisible, ocupad
                         : "Publicar a los módulos"
                     }
                   >
-                    {p.visible_modulos ? "Activo" : "Oculto"}
+                    {p.visible_modulos ? "Publicado" : "Oculto"}
                   </button>
                 </td>
                 <td className="td-mono">{p.codigo ?? "—"}</td>
@@ -896,8 +905,8 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
     }
   }, [formAbierto]);
 
-  const visible = useMemo(
-    () => proyectos.find((p) => p.visible_modulos) ?? null,
+  const publicados = useMemo(
+    () => proyectos.filter((p) => p.visible_modulos),
     [proyectos]
   );
 
@@ -987,11 +996,12 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
 
   async function toggleVisible(p) {
     const previos = proyectos;
+    // Solo se toca la fila del botón: publicar un proyecto ya no despublica a
+    // los demás.
     setProyectos((lista) =>
-      lista.map((x) => ({
-        ...x,
-        visible_modulos: p.visible_modulos ? false : x.id === p.id,
-      }))
+      lista.map((x) =>
+        x.id === p.id ? { ...x, visible_modulos: !p.visible_modulos } : x
+      )
     );
     setGuardando(true);
     setError(null);
@@ -999,10 +1009,10 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
     try {
       if (p.visible_modulos) {
         await api.quitarVisible(p.id);
-        setOk("Proyecto sacado de los módulos. Ahora no ven ninguno.");
+        setOk(`"${p.nombre}" ya no se ofrece en los otros módulos.`);
       } else {
         await api.marcarVisible(p.id);
-        setOk(`Los módulos ahora ven "${p.nombre}".`);
+        setOk(`"${p.nombre}" ya se ofrece en los otros módulos.`);
       }
       await load();
     } catch (err) {
@@ -1039,27 +1049,28 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
           <div className="stat-value sm">{totalesTexto}</div>
         </div>
         <div className="stat">
-          <div className="stat-label">Activo en módulos</div>
-          <div className="stat-value sm">
-            {visible ? (visible.codigo ?? visible.nombre) : "Ninguno"}
-          </div>
+          <div className="stat-label">Publicados en módulos</div>
+          <div className="stat-value">{publicados.length}</div>
         </div>
       </div>
 
-      <Note tipo={visible ? "info" : "warn"}>
-        {visible ? (
+      <Note tipo={publicados.length ? "info" : "warn"}>
+        {publicados.length ? (
           <>
-            Compras, Víveres, Reparaciones, HSQE y Projects están imputando a{" "}
+            {publicados.length === 1
+              ? "1 proyecto publicado"
+              : `${publicados.length} proyectos publicados`}{" "}
+            para los otros módulos:{" "}
             <strong>
-              {visible.codigo ? `${visible.codigo} · ` : ""}
-              {visible.nombre}
+              {publicados.map((p) => p.codigo ?? p.nombre).join("  ·  ")}
             </strong>
-            .
+            . Cada módulo tiene que leer esta lista para poder ofrecerla en su
+            desplegable de Proyecto; por ahora ninguno lo hace.
           </>
         ) : (
           <>
-            Ningún proyecto publicado. Los dropdowns de Proyecto en los otros módulos
-            van a estar vacíos hasta que actives uno.
+            Ningún proyecto publicado. Los desplegables de Proyecto de los otros
+            módulos van a estar vacíos hasta que publiques al menos uno.
           </>
         )}
       </Note>
