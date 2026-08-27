@@ -35,14 +35,21 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+// Solo PL Offshore, a proposito.
+//
+// En Xubio cada empresa es una cuenta separada, y el client-id da acceso a una
+// sola. Ese es el limite real del alcance: con estas credenciales,
+// /centroDeCostoBean no puede devolver centros de otra empresa.
+//
+// sync-productos-xubio tambien contempla terra_mare. Aca no se incluye porque
+// no sabemos con que texto estan grabadas las filas de esa empresa en las
+// tablas proyectos / centros_costo, y un mapeo adivinado escribiria filas con
+// una empresa que no existe. Cuando haga falta, se agrega con el valor
+// confirmado, aca y en EMPRESA_EN_TABLA.
 const XUBIO_CREDS: Record<string, { clientId: string; secretId: string }> = {
   pl_offshore: {
     clientId: Deno.env.get("XUBIO_PL_CLIENT_ID") ?? "",
     secretId: Deno.env.get("XUBIO_PL_SECRET_ID") ?? "",
-  },
-  terra_mare: {
-    clientId: Deno.env.get("XUBIO_TMS_CLIENT_ID") ?? "",
-    secretId: Deno.env.get("XUBIO_TMS_SECRET_ID") ?? "",
   },
 };
 
@@ -56,7 +63,6 @@ const XUBIO_CREDS: Record<string, { clientId: string; secretId: string }> = {
 // el UPDATE de las tablas, igual que la constante EMPRESA de App.jsx.
 const EMPRESA_EN_TABLA: Record<string, string> = {
   pl_offshore: "Parana Logistica",
-  terra_mare: "Terra Mare Services",
 };
 
 async function getToken(clientId: string, secretId: string): Promise<string> {
