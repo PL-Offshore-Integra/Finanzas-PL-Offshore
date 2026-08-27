@@ -1172,12 +1172,32 @@ function PageCentrosCosto() {
       if (r?.creados) partes.push(r.creados + " nuevo(s)");
       if (r?.vinculados) partes.push(r.vinculados + " vinculado(s) a Xubio");
       if (r?.actualizados) partes.push(r.actualizados + " actualizado(s)");
-      setOk(
-        "Sincronizado con Xubio: " +
-          (partes.length ? partes.join(", ") : "sin cambios") +
-          ". Los nuevos entran inactivos: activalos para que aparezcan en el formulario de proyectos."
-      );
+
+      const detalle =
+        "Xubio devolvi\u00f3 " +
+        (r?.recibidos ?? 0) +
+        " centro(s) de costo. " +
+        (partes.length ? partes.join(", ") + "." : "Sin cambios.");
+
       await load();
+
+      if (r?.omitidos) {
+        // Paso cuando Xubio cambia el nombre del campo del ID: la funcion no
+        // lo encuentra y descarta la fila. Se ve el detalle en los logs.
+        setError(
+          detalle +
+            " " +
+            r.omitidos +
+            " se omitieron porque no se pudo leer su ID en la respuesta de Xubio. Revis\u00e1 los logs de la funci\u00f3n."
+        );
+      } else if (r?.creados) {
+        setOk(
+          detalle +
+            " Los nuevos entran inactivos: activalos para que aparezcan en el formulario de proyectos."
+        );
+      } else {
+        setOk(detalle);
+      }
     } catch (err) {
       const msg = err?.message ?? String(err);
       // La funcion todavia no esta desplegada en Supabase.

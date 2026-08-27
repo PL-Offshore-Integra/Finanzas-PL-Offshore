@@ -79,12 +79,18 @@ async function getToken(clientId: string, secretId: string): Promise<string> {
   return (await res.json()).access_token;
 }
 
-// El swagger de Xubio declara para CentroDeCostoBean tanto "ID" como "id", y
-// para productos el campo real resulto ser "productoid". No hay forma de saber
-// de antemano cual llega, asi que probamos todas y logueamos la primera fila
-// cruda para poder fijar el nombre despues del primer run.
+// El nombre real del campo, confirmado en los logs del primer sync:
+//
+//   {"centroDeCosto_id":30710,"codigo":"ADMINISTRACION","nombre":"Administracion"}
+//
+// Xubio no es consistente entre recursos: en productos el campo es
+// "productoid" (todo junto) y aca es "centroDeCosto_id" (con guion bajo). El
+// swagger declara "ID" e "id", que no son ninguno de los dos. Por eso, ademas
+// de la lista de nombres conocidos, al final hay un barrido generico por
+// cualquier clave que termine en "id".
 function idDeXubio(c: Record<string, unknown>): string | null {
   const candidatos = [
+    "centroDeCosto_id",
     "centroDeCostoId",
     "centrodecostoid",
     "centroCostoId",
@@ -93,6 +99,11 @@ function idDeXubio(c: Record<string, unknown>): string | null {
   ];
   for (const k of candidatos) {
     const v = c[k];
+    if (v !== null && v !== undefined && String(v).trim() !== "") return String(v);
+  }
+  // Ultimo recurso, para no volver a quedarnos afuera por un guion bajo.
+  for (const [k, v] of Object.entries(c)) {
+    if (!/id$/i.test(k)) continue;
     if (v !== null && v !== undefined && String(v).trim() !== "") return String(v);
   }
   return null;
