@@ -214,6 +214,17 @@ const api = {
     if (error) throw error;
   },
 
+  // Activa o desactiva varios centros en una sola consulta. El estado activo
+  // es una decision local: define que centros aparecen en el desplegable del
+  // formulario de proyectos, y Xubio no lo administra.
+  async setActivoCentros(ids, activo) {
+    const { error } = await supabase
+      .from("centros_costo")
+      .update({ activo })
+      .in("id", ids);
+    if (error) throw error;
+  },
+
   // Dispara la Edge Function que espeja los centros de costo de Xubio.
   // La funcion reconcilia por xubio_id y, si no lo encuentra, por nombre:
   // asi las filas cargadas a mano reciben su xubio_id en lugar de duplicarse.
@@ -1138,6 +1149,8 @@ function PageCentrosCosto() {
   const [editandoCentroId, setEditandoCentroId] = useState(null);
   const [form, setForm] = useState(CENTRO_VACIO);
   const [sincronizando, setSincronizando] = useState(false);
+  const [filtro, setFiltro] = useState("");
+  const [seleccion, setSeleccion] = useState([]);
 
   const load = useCallback(async () => {
     setCargando(true);
@@ -1259,6 +1272,49 @@ function PageCentrosCosto() {
 
   const activos = centros.filter((c) => c.activo).length;
 
+  const normaliza = (s) => String(s ?? "").trim().toLowerCase();
+  const visibles = filtro.trim()
+    ? centros.filter((c) => normaliza(c.nombre).includes(normaliza(filtro)))
+    : centros;
+
+  const seleccionados = seleccion.filter((id) =>
+    visibles.some((c) => c.id === id)
+  );
+  const todosMarcados =
+    visibles.length > 0 && visibles.every((c) => seleccion.includes(c.id));
+
+  function marcar(id) {
+    setSeleccion((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  function marcarTodos() {
+    // Aplica sobre lo que se ve, no sobre la tabla entera: con un filtro
+    // activo, "todos" son los filtrados.
+    setSeleccion(todosMarcados ? [] : visibles.map((c) => c.id));
+  }
+
+  async function cambiarActivo(activo) {
+    if (!seleccionados.length) return;
+    setGuardando(true);
+    setError(null);
+    setOk(null);
+    try {
+      await api.setActivoCentros(seleccionados, activo);
+      setOk(
+        seleccionados.length +
+          (activo ? " centro(s) activado(s)." : " centro(s) desactivado(s).")
+      );
+      setSeleccion([]);
+      await load();
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
   return (
     <>
       <Note tipo="err">{error}</Note>
@@ -1334,6 +1390,44 @@ function PageCentrosCosto() {
         </Note>
       )}
 
+      {!cargando && centros.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "flex-end",
+            flexWrap: "wrap",
+            marginBottom: 12,
+          }}
+        >
+          <div className="fg" style={{ flex: "1 1 220px", maxWidth: 320 }}>
+            <label htmlFor="cc-filtro">Buscar</label>
+            <input
+              id="cc-filtro"
+              value={filtro}
+              onChange={(e) => setFiltro(e.target.value)}
+              placeholder="Golondrina, Cronos, Administracion..."
+            />
+          </div>
+          <button
+            className="btn btn-primary"
+            onClick={() => cambiarActivo(true)}
+            disabled={guardando || !seleccionados.length}
+          >
+            Activar
+            {seleccionados.length ? " (" + seleccionados.length + ")" : ""}
+          </button>
+          <button
+            className="btn btn-ghost"
+            onClick={() => cambiarActivo(false)}
+            disabled={guardando || !seleccionados.length}
+          >
+            Desactivar
+            {seleccionados.length ? " (" + seleccionados.length + ")" : ""}
+          </button>
+        </div>
+      )}
+
       {cargando ? (
         <div className="card card-pad0">
           <div className="empty">
@@ -1353,7 +1447,15 @@ function PageCentrosCosto() {
             <table>
               <thead>
                 <tr>
-                  <th>Código</th>
+                  <th style={{ width: 34 }}>
+                    <input
+                      type="checkbox"
+                      checked={todosMarcados}
+                      onChange={marcarTodos}
+                      disabled={guardando}
+                      aria-label="Marcar todos"
+                    />
+                  </th>
                   <th>Nombre</th>
                   <th>Estado</th>
                   <th>Xubio</th>
@@ -1361,9 +1463,17 @@ function PageCentrosCosto() {
                 </tr>
               </thead>
               <tbody>
-                {centros.map((c) => (
+                {visibles.map((c) => (
                   <tr key={c.id}>
-                    <td className="td-mono">{c.codigo ?? "—"}</td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={seleccion.includes(c.id)}
+                        onChange={() => marcar(c.id)}
+                        disabled={guardando}
+                        aria-label={"Marcar " + c.nombre}
+                      />
+                    </td>
                     <td>{c.nombre}</td>
                     <td>
                       <span
@@ -1402,6 +1512,12 @@ function PageCentrosCosto() {
               </tbody>
             </table>
           </div>
+          {!visibles.length && (
+            <div className="empty">
+              <div className="empty-mono">Sin resultados</div>
+              Ningún centro de costo coincide con "{filtro}".
+            </div>
+          )}
         </div>
       )}
     </>
