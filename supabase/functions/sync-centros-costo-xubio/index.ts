@@ -14,13 +14,20 @@
 //      "Golondrina de Mar") se completen con su xubio_id en lugar de
 //      duplicarse.
 //
-//   2. Los centros nuevos entran con activo = false. La decision de que
-//      aparezca en el desplegable de proyectos es local, no de Xubio: el
-//      recurso centroDeCostoBean no tiene un campo de estado.
+//   2. `activo` es el espejo de existir en Xubio, no una curaduria local:
 //
-//   3. Nunca borra filas. Si un centro desaparece de Xubio, queda en la tabla
-//      y se puede desactivar a mano. Borrar podria romper proyectos que ya lo
-//      tengan asignado.
+//        - vino en la respuesta  -> activo = true
+//        - no vino, y lo teniamos vinculado -> activo = false
+//
+//      Xubio es la fuente de verdad. Si el contador lo tiene cargado, es un
+//      centro valido y se puede imputar. Inactivo significa "ya no esta en
+//      Xubio", nada mas. Ojo: eso implica que apagar un centro a mano no
+//      sobrevive al proximo sync.
+//
+//   3. Las filas sin xubio_id (que Xubio nunca conocio) no se tocan.
+//
+//   4. Nunca borra filas. Un centro puede estar asignado a un proyecto, y
+//      borrarlo romperia esa referencia. Desactivar alcanza.
 //
 // Se invoca on-demand desde el boton "Sincronizar desde Xubio" en la pantalla
 // Centros de costo de finanzas-app.
@@ -164,7 +171,7 @@ Deno.serve(async (req) => {
     // 3) leer lo que ya tenemos, para reconciliar en lugar de duplicar
     const { data: existentes, error: errLeer } = await supabase
       .from("centros_costo")
-      .select("id, nombre, codigo, xubio_id")
+      .select("id, nombre, codigo, xubio_id, activo")
       .eq("empresa", empresaTabla);
     if (errLeer) throw errLeer;
 
@@ -178,7 +185,13 @@ Deno.serve(async (req) => {
     let creados = 0;
     let vinculados = 0; // fila que ya existia y recien ahora recibe su xubio_id
     let actualizados = 0;
+    let reactivados = 0; // estaba apagado y Xubio lo sigue teniendo
+    let desactivados = 0; // estaba en Xubio, ya no viene: se apaga
     const omitidos: string[] = [];
+
+    // Los ids que Xubio devolvio en esta corrida. Lo que tengamos guardado con
+    // un xubio_id que no este aca, ya no existe en Xubio.
+    const idsVistos = new Set<string>();
 
     for (const c of centrosXubio) {
       const xid = idDeXubio(c);
@@ -188,6 +201,8 @@ Deno.serve(async (req) => {
         omitidos.push(JSON.stringify(c));
         continue;
       }
+
+      idsVistos.add(xid);
 
       const codigo = c.codigo === null || c.codigo === undefined
         ? null
@@ -203,23 +218,44 @@ Deno.serve(async (req) => {
           nombre,
           codigo,
           xubio_id: xid,
-          activo: false, // lo activa una persona, no Xubio
+          // Activo por defecto: si esta en Xubio, es un centro valido.
+          activo: true,
         }]);
         if (error) throw error;
         creados++;
         continue;
       }
 
-      // No tocamos `activo`: es una decision local.
+      // Vino en la respuesta de Xubio, entonces existe, entonces activo.
       const eraHuerfana = !previa.xubio_id;
+      if (previa.activo !== true) reactivados++;
       const { error } = await supabase
         .from("centros_costo")
-        .update({ nombre, codigo, xubio_id: xid })
+        .update({ nombre, codigo, xubio_id: xid, activo: true })
         .eq("id", previa.id);
       if (error) throw error;
 
       if (eraHuerfana) vinculados++;
       else actualizados++;
+    }
+
+    // Lo que teniamos vinculado a Xubio y ya no vino: se apaga. No se borra,
+    // porque puede estar asignado a un proyecto. Las filas sin xubio_id
+    // (creadas a mano, que Xubio nunca conocio) no se tocan.
+    const desaparecidas = (existentes ?? []).filter(
+      (f) => f.xubio_id && f.activo === true && !idsVistos.has(String(f.xubio_id)),
+    );
+    if (desaparecidas.length > 0) {
+      const { error } = await supabase
+        .from("centros_costo")
+        .update({ activo: false })
+        .in("id", desaparecidas.map((f) => f.id));
+      if (error) throw error;
+      desactivados = desaparecidas.length;
+      console.warn(
+        `[sync-centros-costo-xubio] ${desactivados} centro(s) desactivado(s) por no venir mas de Xubio:`,
+        desaparecidas.map((f) => f.nombre).join(" | "),
+      );
     }
 
     if (omitidos.length > 0) {
@@ -237,6 +273,8 @@ Deno.serve(async (req) => {
       creados,
       vinculados,
       actualizados,
+      reactivados,
+      desactivados,
       omitidos: omitidos.length,
     }, 200);
   } catch (e) {

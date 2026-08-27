@@ -59,8 +59,6 @@ const FORM_VACIO = {
 // para no pisar campos que administra projects-app.
 const CAMPOS_ESCRITURA = Object.keys(FORM_VACIO);
 
-const CENTRO_VACIO = { nombre: "", activo: true };
-
 const NAV = [
   {
     titulo: "Maestros",
@@ -177,36 +175,6 @@ const api = {
       .order("nombre", { ascending: true });
     if (error) throw error;
     return data ?? [];
-  },
-
-  async crearCentroCosto(form) {
-    const { data, error } = await supabase
-      .from("centros_costo")
-      .insert([
-        {
-          empresa: EMPRESA,
-          nombre: form.nombre.trim(),
-          activo: form.activo !== false,
-        },
-      ])
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    return data;
-  },
-
-  async actualizarCentroCosto(id, form) {
-    const { data, error } = await supabase
-      .from("centros_costo")
-      .update({
-        nombre: form.nombre.trim(),
-        activo: form.activo !== false,
-      })
-      .eq("id", id)
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    return data;
   },
 
   async borrarCentroCosto(id) {
@@ -1146,8 +1114,6 @@ function PageCentrosCosto() {
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState(null);
   const [ok, setOk] = useState(null);
-  const [editandoCentroId, setEditandoCentroId] = useState(null);
-  const [form, setForm] = useState(CENTRO_VACIO);
   const [sincronizando, setSincronizando] = useState(false);
   const [filtro, setFiltro] = useState("");
   const [seleccion, setSeleccion] = useState([]);
@@ -1168,13 +1134,6 @@ function PageCentrosCosto() {
     load();
   }, [load]);
 
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  function cerrarForm() {
-    setEditandoCentroId(null);
-    setForm(CENTRO_VACIO);
-  }
-
   async function sincronizar() {
     setSincronizando(true);
     setError(null);
@@ -1185,6 +1144,11 @@ function PageCentrosCosto() {
       if (r?.creados) partes.push(r.creados + " nuevo(s)");
       if (r?.vinculados) partes.push(r.vinculados + " vinculado(s) a Xubio");
       if (r?.actualizados) partes.push(r.actualizados + " actualizado(s)");
+      if (r?.reactivados) partes.push(r.reactivados + " activado(s)");
+      if (r?.desactivados)
+        partes.push(
+          r.desactivados + " desactivado(s) por no estar m\u00e1s en Xubio"
+        );
 
       const detalle =
         "Xubio devolvi\u00f3 " +
@@ -1203,11 +1167,6 @@ function PageCentrosCosto() {
             r.omitidos +
             " se omitieron porque no se pudo leer su ID en la respuesta de Xubio. Revis\u00e1 los logs de la funci\u00f3n."
         );
-      } else if (r?.creados) {
-        setOk(
-          detalle +
-            " Los nuevos entran inactivos: activalos para que aparezcan en el formulario de proyectos."
-        );
       } else {
         setOk(detalle);
       }
@@ -1223,30 +1182,6 @@ function PageCentrosCosto() {
       }
     } finally {
       setSincronizando(false);
-    }
-  }
-
-  async function guardar() {
-    if (!form.nombre?.trim()) {
-      setError("El nombre del centro de costo es obligatorio.");
-      return;
-    }
-    setGuardando(true);
-    setError(null);
-    try {
-      if (editandoCentroId) {
-        await api.actualizarCentroCosto(editandoCentroId, form);
-        setOk("Centro de costo actualizado.");
-      } else {
-        await api.crearCentroCosto(form);
-        setOk("Centro de costo agregado.");
-      }
-      cerrarForm();
-      await load();
-    } catch (err) {
-      setError(mensajeError(err));
-    } finally {
-      setGuardando(false);
     }
   }
 
@@ -1337,56 +1272,11 @@ function PageCentrosCosto() {
         </button>
       </div>
 
-      <div className="card">
-        <div className="form-section">
-          {editandoCentroId ? "Editar centro de costo" : "Nuevo centro de costo"}
-        </div>
-
-        <div className="form-grid">
-          <div className="fg" style={{ gridColumn: "span 2" }}>
-            <label htmlFor="cc-nombre">Nombre</label>
-            <input
-              id="cc-nombre"
-              value={form.nombre ?? ""}
-              onChange={set("nombre")}
-              placeholder="Golondrina de Mar"
-            />
-          </div>
-          <div className="fg">
-            <label htmlFor="cc-estado">Estado</label>
-            <select
-              id="cc-estado"
-              value={form.activo === false ? "no" : "si"}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, activo: e.target.value === "si" }))
-              }
-            >
-              <option value="si">Activo</option>
-              <option value="no">Inactivo</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="form-ftr">
-          {editandoCentroId && (
-            <button className="btn btn-ghost" onClick={cerrarForm} disabled={guardando}>
-              Cancelar
-            </button>
-          )}
-          <button className="btn btn-primary" onClick={guardar} disabled={guardando}>
-            {guardando
-              ? "Guardando..."
-              : editandoCentroId
-                ? "Guardar cambios"
-                : "Agregar"}
-          </button>
-        </div>
-      </div>
-
       {!cargando && centros.length > 0 && (
         <Note tipo="info">
-          {activos} de {centros.length} centros activos. Solo los activos aparecen en
-          el formulario de proyectos.
+          {activos} de {centros.length} centros activos. Activo significa que el
+          centro sigue existiendo en Xubio; los inactivos ya no están ahí. Solo
+          los activos aparecen en el formulario de proyectos.
         </Note>
       )}
 
@@ -1438,7 +1328,7 @@ function PageCentrosCosto() {
         <div className="card card-pad0">
           <div className="empty">
             <div className="empty-mono">Sin centros de costo</div>
-            Agregá el primero para que aparezca en el formulario de proyectos.
+            Se cargan desde Xubio: apretá "Sincronizar desde Xubio" para traerlos.
           </div>
         </div>
       ) : (
@@ -1484,21 +1374,6 @@ function PageCentrosCosto() {
                     </td>
                     <td className="td-mono">{c.xubio_id ?? "—"}</td>
                     <td className="td-actions">
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => {
-                          setEditandoCentroId(c.id);
-                          setForm({
-                            nombre: c.nombre ?? "",
-                            activo: c.activo !== false,
-                          });
-                          setError(null);
-                          setOk(null);
-                        }}
-                        disabled={guardando}
-                      >
-                        Editar
-                      </button>
                       <button
                         className="btn btn-danger btn-sm"
                         onClick={() => borrar(c)}
