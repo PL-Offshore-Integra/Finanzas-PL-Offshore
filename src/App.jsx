@@ -26,9 +26,8 @@ const EMPRESA_DISPLAY = "PL Offshore";
 // Convencion tomada de sync-productos-xubio en compras-app.
 const EMPRESA_XUBIO = "pl_offshore";
 
-const MONEDAS = ["USD", "ARS", "EUR"];
-const ESTADOS = ["abierto", "en_curso", "cerrado"];
-
+// La moneda y el estado ya no se eligen acá: vienen de Comercial. Quedan las
+// etiquetas, que son para mostrarlos.
 const ESTADO_LABEL = {
   abierto: "Abierto",
   en_curso: "En curso",
@@ -55,9 +54,14 @@ const FORM_VACIO = {
   estado_financiero: "abierto",
 };
 
-// Columnas que Finanzas escribe. Nada más de `proyectos` se toca,
-// para no pisar campos que administra projects-app.
-const CAMPOS_ESCRITURA = Object.keys(FORM_VACIO);
+// Columnas que Finanzas escribe. Son dos, y son las únicas suyas.
+//
+// Todo proyecto nace en Comercial y llega acá por el espejo. Los campos que
+// vienen de allá —código, nombre, cliente, moneda, fechas, descripción,
+// estado— se muestran pero no se editan: escribirlos sería inútil, porque la
+// próxima edición en Comercial los vuelve a pisar. Lo que Finanzas sabe y
+// Comercial no es a qué buque se imputa y cuánto se espera gastar.
+const CAMPOS_ESCRITURA = ["centro_costo", "presupuesto_total"];
 
 const NAV = [
   {
@@ -91,7 +95,7 @@ const NAV_NUM = Object.fromEntries(
 const SECCIONES = {
   proyectos: {
     titulo: "Proyectos",
-    sub: "Fuente de verdad del grupo. Los proyectos que publiques acá son los que pueden elegir los demás módulos.",
+    sub: "Llegan de Comercial. Acá se les asigna centro de costo y presupuesto, y se decide cuáles pueden elegir los demás módulos.",
   },
   centros: {
     titulo: "Centros de costo",
@@ -130,15 +134,9 @@ const api = {
     return data ?? [];
   },
 
-  async crearProyecto(form) {
-    const { data, error } = await supabase
-      .from("proyectos")
-      .insert([{ ...payload(form), origen: "finanzas" }])
-      .select()
-      .maybeSingle();
-    if (error) throw error;
-    return data;
-  },
+  // No hay crearProyecto. Los proyectos nacen en Comercial y llegan por el
+  // espejo; Finanzas los recibe, les pone centro de costo y presupuesto, y
+  // decide cuáles ve el resto de los módulos.
 
   async actualizarProyecto(id, form) {
     const { data, error } = await supabase
@@ -259,10 +257,9 @@ function fmtFecha(iso) {
   return `${p[2]}/${p[1]}/${p[0]}`;
 }
 
+// Solo se valida lo que Finanzas escribe. El nombre y las fechas los valida
+// Comercial al crear el proyecto; acá llegan hechos.
 function validar(form) {
-  if (!form.nombre?.trim()) return "El nombre del proyecto es obligatorio.";
-  if (form.fecha_inicio && form.fecha_fin && form.fecha_fin < form.fecha_inicio)
-    return "La fecha de fin no puede ser anterior a la de inicio.";
   if (
     form.presupuesto_total !== "" &&
     form.presupuesto_total !== null &&
@@ -470,8 +467,11 @@ tr.is-visible td{background:var(--surface2)}
 /* El foco es el outline amarillo del sistema, no un borde más grueso: así el
    campo no se mueve un pixel al enfocarse. */
 .fg input:focus,.fg select:focus,.fg textarea:focus{border-color:var(--navy);outline:2px solid var(--amarillo);outline-offset:2px}
-.fg input[readonly]{background:var(--surface2);color:var(--muted);cursor:default}
-.fg input[readonly]:focus{border-color:var(--border2);outline:none}
+/* Los campos que se muestran pero no se escriben: casi todo el formulario de
+   proyecto, que llega hecho desde Comercial. */
+.fg input[readonly],.fg textarea[readonly]{background:var(--surface2);color:var(--muted);cursor:default}
+.fg input[readonly]:focus,.fg textarea[readonly]:focus{border-color:var(--border2);outline:none}
+.fg .hint{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--muted2)}
 .form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:16px}
 .form-section{position:relative;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
 /* La regla amarilla de 64x3px debajo del título de sección, como la define el
@@ -664,10 +664,13 @@ function LoginPage() {
   );
 }
 
+// El formulario de un proyecto que vino de Comercial. Casi todo se muestra y
+// no se toca: lo que se edita acá son las dos columnas de Finanzas, centro de
+// costo y presupuesto. Los campos de Comercial se dejan a la vista igual,
+// porque para decidir el centro de costo hay que ver de qué proyecto se trata.
 function ProyectoForm({
   form,
   setForm,
-  editando,
   onGuardar,
   onCancelar,
   guardando,
@@ -687,23 +690,22 @@ function ProyectoForm({
 
   return (
     <div className="card">
-      <div className="form-section">
-        {editando ? "Editar proyecto" : "Nuevo proyecto"}
-      </div>
+      <div className="form-section">Proyecto</div>
+
+      <Note tipo="info">
+        Este proyecto se administra en <strong>Comercial</strong>. Acá se
+        completan las dos columnas que son de Finanzas: el centro de costo y el
+        presupuesto. El resto se muestra como referencia y se corrige allá.
+      </Note>
 
       <div className="form-grid">
         <div className="fg">
           <label htmlFor="f-codigo">Código</label>
-          <input
-            id="f-codigo"
-            value={form.codigo ?? ""}
-            onChange={set("codigo")}
-            placeholder="PL-2026-001"
-          />
+          <input id="f-codigo" value={form.codigo ?? ""} readOnly tabIndex={-1} />
         </div>
         <div className="fg" style={{ gridColumn: "span 2" }}>
           <label htmlFor="f-nombre">Nombre del proyecto</label>
-          <input id="f-nombre" value={form.nombre ?? ""} onChange={set("nombre")} />
+          <input id="f-nombre" value={form.nombre ?? ""} readOnly tabIndex={-1} />
         </div>
 
         <div className="fg">
@@ -712,7 +714,7 @@ function ProyectoForm({
         </div>
         <div className="fg">
           <label htmlFor="f-cliente">Cliente</label>
-          <input id="f-cliente" value={form.cliente ?? ""} onChange={set("cliente")} />
+          <input id="f-cliente" value={form.cliente ?? ""} readOnly tabIndex={-1} />
         </div>
         <div className="fg">
           <label htmlFor="f-cc">Centro de costo</label>
@@ -741,13 +743,7 @@ function ProyectoForm({
 
         <div className="fg">
           <label htmlFor="f-moneda">Moneda</label>
-          <select id="f-moneda" value={form.moneda ?? "USD"} onChange={set("moneda")}>
-            {MONEDAS.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
+          <input id="f-moneda" value={form.moneda ?? "USD"} readOnly tabIndex={-1} />
         </div>
         <div className="fg">
           <label htmlFor="f-ppto">Presupuesto total</label>
@@ -758,20 +754,16 @@ function ProyectoForm({
             value={form.presupuesto_total ?? ""}
             onChange={set("presupuesto_total")}
           />
+          <div className="hint">Cuánto se espera gastar, no el valor vendido.</div>
         </div>
         <div className="fg">
           <label htmlFor="f-estado">Estado</label>
-          <select
+          <input
             id="f-estado"
-            value={form.estado_financiero ?? "abierto"}
-            onChange={set("estado_financiero")}
-          >
-            {ESTADOS.map((e) => (
-              <option key={e} value={e}>
-                {ESTADO_LABEL[e]}
-              </option>
-            ))}
-          </select>
+            value={ESTADO_LABEL[form.estado_financiero] ?? form.estado_financiero ?? ""}
+            readOnly
+            tabIndex={-1}
+          />
         </div>
 
         <div className="fg">
@@ -780,7 +772,8 @@ function ProyectoForm({
             id="f-ini"
             type="date"
             value={form.fecha_inicio ?? ""}
-            onChange={set("fecha_inicio")}
+            readOnly
+            tabIndex={-1}
           />
         </div>
         <div className="fg">
@@ -789,18 +782,15 @@ function ProyectoForm({
             id="f-fin"
             type="date"
             value={form.fecha_fin ?? ""}
-            onChange={set("fecha_fin")}
+            readOnly
+            tabIndex={-1}
           />
         </div>
       </div>
 
       <div className="fg">
         <label htmlFor="f-desc">Descripción</label>
-        <textarea
-          id="f-desc"
-          value={form.descripcion ?? ""}
-          onChange={set("descripcion")}
-        />
+        <textarea id="f-desc" value={form.descripcion ?? ""} readOnly tabIndex={-1} />
       </div>
 
       <div className="form-ftr">
@@ -808,7 +798,7 @@ function ProyectoForm({
           Cancelar
         </button>
         <button className="btn btn-primary" onClick={onGuardar} disabled={guardando}>
-          {guardando ? "Guardando..." : editando ? "Guardar cambios" : "Crear proyecto"}
+          {guardando ? "Guardando..." : "Guardar cambios"}
         </button>
       </div>
     </div>
@@ -821,7 +811,9 @@ function TablaProyectos({ proyectos, onEditar, onBorrar, onToggleVisible, ocupad
       <div className="card card-pad0">
         <div className="empty">
           <div className="empty-mono">Sin proyectos</div>
-          Creá el primero para que los módulos puedan imputar contra él.
+          Los proyectos se crean en Comercial y aparecen acá solos. Cuando haya
+          uno, asignale centro de costo y presupuesto, y publicalo para que los
+          demás módulos puedan imputar contra él.
         </div>
       </div>
     );
@@ -941,7 +933,7 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
   }, [load]);
 
   // El form se puede cerrar desde el sidebar (el padre baja formAbierto).
-  // Sin esto, el siguiente "Nuevo proyecto" editaría el registro anterior.
+  // Sin esto, la siguiente edición abriría con los datos del proyecto anterior.
   useEffect(() => {
     if (!formAbierto) {
       setEditandoId(null);
@@ -1003,13 +995,8 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
     setGuardando(true);
     setError(null);
     try {
-      if (editandoId) {
-        await api.actualizarProyecto(editandoId, form);
-        setOk("Proyecto actualizado.");
-      } else {
-        await api.crearProyecto(form);
-        setOk("Proyecto creado.");
-      }
+      await api.actualizarProyecto(editandoId, form);
+      setOk("Proyecto actualizado.");
       cerrarForm();
       await load();
     } catch (err) {
@@ -1119,13 +1106,12 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
         )}
       </Note>
 
-      {formAbierto && (
+      {formAbierto && editandoId && (
         <ProyectoForm
           form={form}
           setForm={setForm}
           centros={centros}
           centrosOk={centrosOk}
-          editando={Boolean(editandoId)}
           onGuardar={guardar}
           onCancelar={cerrarForm}
           guardando={guardando}
@@ -1649,16 +1635,7 @@ export default function App() {
                 <h1>{seccion.titulo}</h1>
                 {seccion.sub && <p>{seccion.sub}</p>}
               </div>
-              {page === "proyectos" && !formAbierto && (
-                <div className="pagehead-actions">
-                  <button
-                    className="btn btn-primary"
-                    onClick={() => setFormAbierto(true)}
-                  >
-                    Nuevo proyecto
-                  </button>
-                </div>
-              )}
+              {/* No hay boton de alta: los proyectos nacen en Comercial. */}
             </div>
           </div>
 

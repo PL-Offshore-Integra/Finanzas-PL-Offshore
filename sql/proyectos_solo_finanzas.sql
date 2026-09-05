@@ -1,4 +1,18 @@
 -- ============================================================
+-- SUPERADO · NO CORRER
+--
+-- Lo reemplaza sql/proyectos_solo_comercial.sql. Desde que todos los
+-- proyectos salen de Comercial, este script bloquea justo lo unico que tiene
+-- que poder entrar. Queda en el repo como registro de lo que pudo haberse
+-- corrido contra la base, no como algo para ejecutar.
+--
+-- Ademas tenia un defecto: el paso 1 pone el default de `origen` en
+-- 'finanzas', y los defaults se aplican ANTES de que corra un trigger BEFORE.
+-- Un INSERT sin origen llegaba al chequeo ya con 'finanzas' puesto y pasaba,
+-- asi que el porton nunca bloqueo lo que decia bloquear.
+-- ============================================================
+
+-- ============================================================
 -- INTEGRA · Finanzas — los proyectos se crean SOLO en Finanzas
 --
 -- Objetivo: que la tabla public.proyectos tenga un unico lugar de alta.
