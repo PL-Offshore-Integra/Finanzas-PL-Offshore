@@ -63,15 +63,30 @@ const NAV = [
   {
     titulo: "Maestros",
     items: [
-      { id: "proyectos", label: "Proyectos", icon: "folder" },
-      { id: "centros", label: "Centros de costo", icon: "tag" },
+      { id: "proyectos", label: "Proyectos" },
+      { id: "centros", label: "Centros de costo" },
     ],
   },
   {
     titulo: "Análisis",
-    items: [{ id: "consolidado", label: "Consolidado", icon: "chart" }],
+    items: [{ id: "consolidado", label: "Consolidado" }],
   },
 ];
+
+// Numeros en Saira 900 en lugar de iconos. El design system no define
+// iconografia y la ausencia es deliberada: la marca sustituye iconos por
+// numeracion, tipografia y color. La alternativa que contempla —Lucide con
+// stroke 1.5— la tiene que aprobar Marketing Corporativo, asi que no se usa.
+//
+// La numeracion corre sobre todo el menu, atravesando los grupos: es un
+// indice de secciones, no un contador por bloque. Se deriva de NAV para que
+// agregar una pantalla no obligue a renumerar a mano.
+const NAV_NUM = Object.fromEntries(
+  NAV.flatMap((g) => g.items).map((it, i) => [
+    it.id,
+    String(i + 1).padStart(2, "0"),
+  ])
+);
 
 const SECCIONES = {
   proyectos: {
@@ -86,14 +101,6 @@ const SECCIONES = {
     titulo: "Consolidado",
     sub: "Costos por módulo imputados al proyecto activo.",
   },
-};
-
-const ICONS = {
-  folder:
-    "M3 6a2 2 0 0 1 2-2h3.6a2 2 0 0 1 1.4.6L11.4 6H19a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z",
-  chart: "M4 20V10M10 20V4M16 20v-7M22 20H2",
-  tag: "M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0l-7.2-7.2A2 2 0 0 1 3 12V4a1 1 0 0 1 1-1h8a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.6Z",
-  panel: "M4 4h16v16H4V4Zm6 0v16",
 };
 
 // ============================================================
@@ -286,24 +293,48 @@ function mensajeError(err) {
 // ============================================================
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Saira:wght@500;600;700;800;900&family=Archivo:wght@400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
-/*  TOKENS · Navy = estructura, nunca acción. Un solo color de acción.  */
+/*  TOKENS · paleta del PL Offshore Design System, que es normativo: cuando el
+    sistema y una convención genérica de diseño difieren, gana el sistema.
+    Navy corporativo #002247 dominante (~70%), blanco (~20%) y amarillo
+    #FBBC05 de acento puntual (~10%), nunca como fondo de un bloque grande.
+    Gris técnico #5B6671 para texto secundario y datos, negro institucional
+    #0B0F14 para el cuerpo.  */
 :root{
-  --navy:#082F4E;--blue:#056D76;--mid:#4A5560;--light:#C9D0D6;
+  --navy:#002247;--navy-deep:#001327;--navy-mid:#001A38;
+  --blue:#002247;--mid:#5B6671;--light:#D8DEE4;
   --bg:#FAFBFC;--surface:#FFFFFF;--surface2:#F4F6F8;--surface3:#E4E8EC;
-  --border:#E4E8EC;--border2:#C9D0D6;
-  --text:#0F1419;--muted:#4A5560;--muted2:#7A8792;
-  --accent:#056D76;--accent2:#0E7A5F;--warn:#8F5A0B;--danger:#B3261E;
-  --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;--r:4px;
-  --nav:#082F4E;--action:#056D76;--action-press:#04565D;
+  /* Un solo color de borde, 1px, como manda el sistema. */
+  --border:#D8DEE4;--border2:#D8DEE4;
+  --text:#0B0F14;--muted:#5B6671;--muted2:#8A939C;
+  --amarillo:#FBBC05;--amarillo-press:#E0A800;
+  --accent:#002247;--accent2:#0E7A5F;--warn:#8F5A0B;--danger:#B3261E;
+  /* --mono ya no es monoespaciada: es la Saira en mayúscula con la que están
+     hechas las etiquetas y los eyebrows. Los números de las tablas usan
+     .td-mono, que es la que aporta las cifras tabulares. */
+  --mono:'Saira',sans-serif;--display:'Saira',sans-serif;
+  --sans:'Archivo',Arial,sans-serif;--r:2px;
+  --nav:#002247;--action:#002247;--action-press:#001327;
   --tr:color 120ms cubic-bezier(.2,0,.38,.9),background-color 120ms cubic-bezier(.2,0,.38,.9),border-color 120ms cubic-bezier(.2,0,.38,.9);
 }
-[data-instance="pl-offshore"]{--nav:#002247;--action:#002247;--blue:#002247;--accent:#002247;--action-press:#001730}
+/* La instancia ya no cambia nada: el módulo es de PL Offshore y la paleta de
+   arriba es la suya. Se deja declarado para no romper el atributo del layout. */
+[data-instance="pl-offshore"]{--nav:#002247;--action:#002247;--blue:#002247;--accent:#002247}
 
+/* Desviación consciente del sistema, la misma que ya tomó Comercial: el
+   sistema define Body 13/1.55 y acá va 15. Esa escala está pensada para piezas
+   documentales —decks, A4, one-pagers—, no para una pantalla de carga de datos
+   que se mira de cerca varias horas por día. Por el mismo motivo los campos de
+   formulario van en 14px. El resto de la escala —H1, eyebrow, KPI— sigue al
+   sistema al pie de la letra. */
 body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.55;min-height:100vh;overflow-x:hidden}
-*:focus-visible{outline:2px solid var(--action);outline-offset:2px}
+/* Foco amarillo con 2px de offset, y hover de enlaces navy -> amarillo. Los
+   .btn quedan afuera del hover: tienen el suyo. */
+*:focus-visible{outline:2px solid var(--amarillo);outline-offset:2px}
+a{color:inherit;text-decoration:none}
+a:not(.btn):hover{color:var(--amarillo)}
 
 /*  BARRA SUPERIOR · 56px navy  */
 .appbar{height:56px;background:var(--nav);display:flex;align-items:center;gap:24px;padding:0 24px;flex:0 0 auto}
@@ -323,19 +354,23 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15
 .sidebar-header{border-bottom:1px solid var(--border);padding:16px;display:flex;align-items:center;gap:12px;min-height:69px}
 .sidebar-logo-img{width:32px;height:32px;object-fit:contain;flex:0 0 auto}
 .sidebar-logo-main{font:600 15px/1.3 var(--sans);color:var(--navy)}
-.sidebar-logo-sub{font-family:var(--mono);font-size:11px;font-weight:500;color:var(--muted);letter-spacing:.06em;text-transform:uppercase;margin-top:2px}
+.sidebar-logo-sub{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:2px}
 .sidebar-nav{flex:1;padding:12px 0;overflow-y:auto}
-.nav-section{padding:14px 16px 8px;font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;text-align:left}
+.nav-section{padding:14px 16px 8px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;text-align:left}
 .ni{display:flex;align-items:center;gap:12px;width:100%;padding:9px 16px 9px 13px;background:transparent;border:0;border-left:3px solid transparent;cursor:pointer;text-align:left;font:400 14px/1.3 var(--sans);color:var(--muted);transition:var(--tr);min-height:38px}
 .ni:hover{background:var(--surface2);color:var(--navy)}
-.ni.active{background:var(--surface2);border-left-color:var(--action);color:var(--navy);font-weight:500}
-.ni-ico{display:block;flex:0 0 auto;color:var(--muted2)}
-.ni.active .ni-ico{color:var(--action)}
+.ni.active{background:var(--surface2);border-left-color:var(--amarillo);color:var(--navy);font-weight:500}
+/* El sistema no admite iconografía: el número de sección, en Saira 900, ocupa
+   el lugar que tenía el icono. */
+.ni-num{display:block;flex:0 0 auto;width:20px;font-family:var(--display);font-size:12px;font-weight:900;letter-spacing:.06em;color:var(--muted2);font-variant-numeric:tabular-nums}
+.ni.active .ni-num{color:var(--amarillo)}
 .ni-label{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sidebar-foot{border-top:1px solid var(--border);padding:12px 8px;display:flex;flex-direction:column;gap:2px}
 .sidebar-foot-btn{display:flex;align-items:center;gap:12px;width:100%;padding:9px 10px;background:none;border:0;border-radius:var(--r);cursor:pointer;font:500 13px/1.2 var(--sans);color:var(--muted);transition:var(--tr)}
 .sidebar-foot-btn:hover{background:var(--surface2);color:var(--navy)}
-.sidebar-foot-meta{padding:8px 10px 0;font-family:var(--mono);font-size:11px;font-weight:500;line-height:1.6;letter-spacing:.06em;color:var(--muted2)}
+/* El chevron de colapsar, en la misma caja que los números de sección. */
+.sidebar-foot-ico{display:block;flex:0 0 auto;width:20px;text-align:center;font-family:var(--display);font-size:13px;font-weight:900;color:var(--muted2)}
+.sidebar-foot-meta{padding:8px 10px 0;font-family:var(--mono);font-size:11px;font-weight:600;line-height:1.6;letter-spacing:.12em;color:var(--muted2)}
 .shell.is-collapsed .sidebar-header{justify-content:center;padding:16px 8px}
 .shell.is-collapsed .ni{justify-content:center;padding:9px 8px 9px 5px}
 .shell.is-collapsed .sidebar-foot-btn{justify-content:center}
@@ -347,7 +382,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15
 .crumb button:hover{text-decoration:underline;color:var(--navy)}
 .crumb-current{color:var(--text)}
 .pagehead-row{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-top:10px}
-.pagehead h1{font:600 24px/1.25 var(--sans);color:var(--navy)}
+.pagehead h1{font:800 30px/1.05 var(--display);letter-spacing:-.01em;text-transform:uppercase;color:var(--navy);margin:0}
 .pagehead p{font:400 13px/1.45 var(--sans);color:var(--muted);margin:6px 0 0;max-width:70ch}
 .pagehead-actions{display:flex;gap:8px;flex:0 0 auto}
 .content{flex:1;overflow-y:auto;overflow-x:hidden;padding:24px;background:var(--bg)}
@@ -359,34 +394,36 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15
 /*  KPIs  */
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px;margin-bottom:24px}
 .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:16px 18px;min-width:0}
-.stat-label{font-family:var(--mono);font-size:11px;color:var(--muted);font-weight:500;letter-spacing:.08em;margin-bottom:8px;text-transform:uppercase}
-.stat-value{font-family:var(--mono);font-size:30px;font-weight:600;color:var(--navy);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-.stat-value.sm{font-size:18px;line-height:1.4}
+.stat-label{font-family:var(--mono);font-size:10px;color:var(--muted);font-weight:600;letter-spacing:.1em;margin-bottom:8px;text-transform:uppercase}
+.stat-value{font-family:var(--display);font-size:38px;font-weight:900;line-height:1.05;color:var(--navy);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.stat-value.sm{font-size:20px;line-height:1.4}
 
 /*  TABLAS  */
 .table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;padding:10px 12px;text-align:left;border-bottom:2px solid var(--navy);white-space:nowrap;background:var(--surface)}
+th{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;padding:10px 12px;text-align:left;border-bottom:2px solid var(--navy);white-space:nowrap;background:var(--surface)}
 td{padding:12px;border-bottom:1px solid var(--border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
 tr.is-visible td{background:var(--surface2)}
-.td-mono{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* Los números de tabla: Archivo con cifras tabulares. Desde que --mono es
+   Saira en mayúscula, es acá donde vive la alineación de las columnas. */
+.td-mono{font-family:var(--sans);font-variant-numeric:tabular-nums;letter-spacing:.01em;white-space:nowrap}
 .td-actions{white-space:nowrap;text-align:right}
 .td-actions .btn+.btn{margin-left:8px}
 
 /*  BADGES  */
-.badge{display:inline-flex;align-items:center;font-family:var(--mono);font-size:11px;font-weight:500;padding:3px 8px;border-radius:3px;white-space:nowrap;letter-spacing:.06em;text-transform:uppercase}
-.b-blue{background:#E6F1F2;color:#056D76}
-.b-teal{background:#E8F3EF;color:#0E7A5F}
-.b-gray{background:#F4F6F8;color:#4A5560}
-.b-amber{background:#FBF1E3;color:#8F5A0B}
-.b-red{background:#FAEAE8;color:#B3261E}
+.badge{display:inline-flex;align-items:center;font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 8px;border-radius:3px;white-space:nowrap;letter-spacing:.12em;text-transform:uppercase}
+.b-blue{background:#E6F1F2;color:#056D76;border:0}
+.b-teal{background:#E8F3EF;color:#0E7A5F;border:0}
+.b-gray{background:#F4F6F8;color:#4A5560;border:0}
+.b-amber{background:#FBF1E3;color:#8F5A0B;border:0}
+.b-red{background:#FAEAE8;color:#B3261E;border:0}
 .badge-btn{border:0;cursor:pointer;font-family:var(--mono);transition:var(--tr)}
 .badge-btn:hover{filter:brightness(.96)}
 .badge-btn:disabled{cursor:not-allowed;opacity:.6}
 
 /*  BOTONES · un solo primario por vista  */
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--sans);font-size:14px;font-weight:500;height:36px;padding:0 16px;border-radius:var(--r);border:1px solid transparent;cursor:pointer;transition:var(--tr);white-space:nowrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;font-family:var(--display);font-size:13px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;height:36px;padding:0 16px;border-radius:var(--r);border:1px solid transparent;cursor:pointer;transition:var(--tr);white-space:nowrap}
 .btn-primary{background:var(--action);color:#fff}
 .btn-primary:hover{background:var(--navy)}
 .btn-primary:active{background:var(--action-press)}
@@ -394,6 +431,11 @@ tr.is-visible td{background:var(--surface2)}
 .btn-ghost:hover{color:var(--text);background:var(--surface2)}
 .btn-danger{background:var(--surface);color:var(--danger);border-color:var(--border2)}
 .btn-danger:hover{background:#FAEAE8;border-color:var(--danger)}
+/* El CTA amarillo: fondo #FBBC05 con texto navy. Nunca a ancho completo, que
+   sería el amarillo como fondo de un bloque grande. */
+.btn-amarillo{background:var(--amarillo);color:var(--navy)}
+.btn-amarillo:hover{background:var(--amarillo-press)}
+.btn-amarillo:active{background:#C99700}
 .btn-sm{height:28px;padding:0 12px;font-size:13px}
 .btn:disabled{background:var(--surface3);color:var(--muted2);border-color:transparent;cursor:not-allowed}
 
@@ -402,23 +444,28 @@ tr.is-visible td{background:var(--surface2)}
 .note strong{font-weight:600}
 .note-err{border-left-color:var(--danger)}
 .note-ok{border-left-color:var(--accent2)}
-.note-info{border-left-color:var(--action)}
+.note-info{border-left-color:var(--amarillo)}
 .note-warn{border-left-color:var(--warn)}
 
 /*  FORMULARIOS  */
 .fg{display:flex;flex-direction:column;gap:6px;min-width:0}
-.fg label{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;font-weight:500}
+.fg label{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.18em;text-transform:uppercase;font-weight:600}
 .fg input,.fg select,.fg textarea{background:var(--surface);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-family:var(--sans);font-size:14px;height:36px;padding:0 12px;outline:none;transition:var(--tr);width:100%}
 .fg textarea{resize:vertical;min-height:72px;height:auto;padding:10px 12px}
-.fg input:focus,.fg select:focus,.fg textarea:focus{border-width:2px;border-color:var(--action);padding:0 11px}
-.fg textarea:focus{padding:9px 11px}
-.fg input[readonly]{background:var(--surface2);color:var(--muted)}
+/* El foco es el outline amarillo del sistema, no un borde más grueso: así el
+   campo no se mueve un pixel al enfocarse. */
+.fg input:focus,.fg select:focus,.fg textarea:focus{border-color:var(--navy);outline:2px solid var(--amarillo);outline-offset:2px}
+.fg input[readonly]{background:var(--surface2);color:var(--muted);cursor:default}
+.fg input[readonly]:focus{border-color:var(--border2);outline:none}
 .form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:16px}
-.form-section{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.form-section{position:relative;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+/* La regla amarilla de 64x3px debajo del título de sección, como la define el
+   design system. */
+.form-section::after{content:"";position:absolute;left:0;bottom:-2px;width:64px;height:3px;background:var(--amarillo)}
 .form-ftr{display:flex;gap:8px;justify-content:flex-end;margin-top:24px;padding-top:16px;border-top:1px solid var(--border)}
 
 .empty{padding:48px 24px;text-align:center;color:var(--muted);font-size:14px}
-.empty-mono{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted2);margin-bottom:8px}
+.empty-mono{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--muted2);margin-bottom:8px}
 
 @media (max-width:900px){
   .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -443,24 +490,6 @@ tr.is-visible td{background:var(--surface2)}
 // ============================================================
 // COMPONENTES
 // ============================================================
-
-function Ico({ d, size = 18 }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d={d} />
-    </svg>
-  );
-}
 
 function Note({ tipo, children }) {
   if (!children) return null;
@@ -494,33 +523,33 @@ function LoginPage() {
   };
 
   const loginCSS = `
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Saira:wght@500;600;700;800;900&family=Archivo:wght@400;500;600&display=swap');
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-    .login-page{min-height:100vh;display:grid;grid-template-columns:minmax(0,1fr) 560px;background:#FFFFFF;font-family:'IBM Plex Sans',sans-serif;color:#0F1419;text-align:left}
+    .login-page{min-height:100vh;display:grid;grid-template-columns:minmax(0,1fr) 560px;background:#FFFFFF;font-family:'Archivo',Arial,sans-serif;color:#0F1419;text-align:left}
     .login-left{display:flex;flex-direction:column;justify-content:space-between;gap:48px;padding:56px 64px;background:#002247}
     .login-left-integra-img{height:52px;width:auto;object-fit:contain;display:block}
     .login-left-divider{width:100%;height:1px;background:rgba(255,255,255,.14);margin:24px 0}
     .login-left-company{display:flex;align-items:center;gap:14px}
     .login-left-company-logo{width:40px;height:40px;border-radius:4px;object-fit:contain;background:rgba(255,255,255,.14);padding:4px}
-    .login-left-company-name{font:600 24px/1.25 'IBM Plex Sans',sans-serif;color:#fff}
-    .login-left-line{width:56px;height:3px;background:#F8BC05;margin:24px 0}
-    .login-left-sub{font:400 15px/1.55 'IBM Plex Sans',sans-serif;color:rgba(255,255,255,.82);max-width:420px}
+    .login-left-company-name{font:600 24px/1.25 'Archivo',Arial,sans-serif;color:#fff}
+    .login-left-line{width:56px;height:3px;background:#FBBC05;margin:24px 0}
+    .login-left-sub{font:400 15px/1.55 'Archivo',Arial,sans-serif;color:rgba(255,255,255,.82);max-width:420px}
     .login-right{display:flex;align-items:center;justify-content:center;padding:56px 64px;background:#FFFFFF}
     .login-card{width:100%;max-width:420px}
-    .login-card-eyebrow{font:500 11px/1.2 'IBM Plex Mono',monospace;letter-spacing:.08em;color:#4A5560;text-transform:uppercase;margin-bottom:12px}
-    .login-card-title{font:600 24px/1.25 'IBM Plex Sans',sans-serif;color:#082F4E;margin-bottom:8px}
-    .login-card-sub{font:400 15px/1.55 'IBM Plex Sans',sans-serif;color:#4A5560;margin-bottom:28px}
+    .login-card-eyebrow{font:500 11px/1.2 'Saira',sans-serif;letter-spacing:.18em;color:#4A5560;text-transform:uppercase;margin-bottom:12px}
+    .login-card-title{font:600 24px/1.25 'Archivo',Arial,sans-serif;color:#082F4E;margin-bottom:8px}
+    .login-card-sub{font:400 15px/1.55 'Archivo',Arial,sans-serif;color:#4A5560;margin-bottom:28px}
     .login-fg{display:flex;flex-direction:column;gap:6px;margin-bottom:16px}
-    .login-fg label{font:500 11px/1.2 'IBM Plex Mono',monospace;color:#4A5560;letter-spacing:.08em;text-transform:uppercase}
-    .login-fg input{border:1px solid #C9D0D6;border-radius:4px;height:40px;padding:0 12px;font:400 14px/1.2 'IBM Plex Sans',sans-serif;color:#0F1419;background:#FFFFFF;outline:none;transition:border-color 120ms cubic-bezier(.2,0,.38,.9)}
+    .login-fg label{font:500 11px/1.2 'Saira',sans-serif;color:#4A5560;letter-spacing:.18em;text-transform:uppercase}
+    .login-fg input{width:100%;border:1px solid #C9D0D6;border-radius:4px;height:40px;padding:0 12px;font:400 14px/1.2 'Archivo',Arial,sans-serif;color:#0F1419;background:#FFFFFF;outline:none;transition:border-color 120ms cubic-bezier(.2,0,.38,.9)}
     .login-fg input::placeholder{color:#7A8792}
-    .login-fg input:focus{border-width:2px;border-color:#002247;padding:0 11px}
-    .login-btn{width:100%;height:44px;padding:0 16px;margin-top:24px;background:#F8BC05;color:#002247;border:none;border-radius:4px;font:600 15px/1.2 'IBM Plex Sans',sans-serif;cursor:pointer;transition:background-color 120ms cubic-bezier(.2,0,.38,.9)}
-    .login-btn:hover{background:#DCA704}
+    .login-fg input:focus{border-color:#002247;outline:2px solid #FBBC05;outline-offset:2px}
+    .login-btn{width:100%;height:44px;padding:0 16px;margin-top:24px;background:#FBBC05;color:#002247;border:none;border-radius:4px;font:600 15px/1.2 'Archivo',Arial,sans-serif;cursor:pointer;transition:background-color 120ms cubic-bezier(.2,0,.38,.9)}
+    .login-btn:hover{background:#E0A800}
     .login-btn:disabled{background:#E4E8EC;color:#7A8792;cursor:not-allowed}
-    .login-error{background:#FFFFFF;color:#0F1419;border:1px solid #E4E8EC;border-left:3px solid #B3261E;border-radius:4px;padding:12px 16px;font:400 13px/1.45 'IBM Plex Sans',sans-serif;margin-bottom:16px}
-    .login-footer{font:500 11px/1.2 'IBM Plex Mono',monospace;color:#4A5560;margin-top:32px;letter-spacing:.06em}
-    .login-back{margin-top:12px;font:500 14px/1.2 'IBM Plex Sans',sans-serif;color:#002247;cursor:pointer;background:none;border:0;padding:0}
+    .login-error{background:#FFFFFF;color:#0F1419;border:1px solid #E4E8EC;border-left:3px solid #B3261E;border-radius:4px;padding:12px 16px;font:400 13px/1.45 'Archivo',Arial,sans-serif;margin-bottom:16px}
+    .login-footer{font:500 11px/1.2 'Saira',sans-serif;color:#4A5560;margin-top:32px;letter-spacing:.12em}
+    .login-back{margin-top:12px;font:500 14px/1.2 'Archivo',Arial,sans-serif;color:#002247;cursor:pointer;background:none;border:0;padding:0}
     .login-back:hover{text-decoration:underline}
     @media(max-width:900px){
       .login-page{grid-template-columns:1fr}
@@ -1559,9 +1588,7 @@ export default function App() {
                     }}
                     title={it.label}
                   >
-                    <span className="ni-ico">
-                      <Ico d={ICONS[it.icon]} />
-                    </span>
+                    <span className="ni-num">{NAV_NUM[it.id]}</span>
                     {navOpen && <span className="ni-label">{it.label}</span>}
                   </button>
                 ))}
@@ -1571,8 +1598,8 @@ export default function App() {
 
           <div className="sidebar-foot">
             <button className="sidebar-foot-btn" onClick={() => setNavOpen((v) => !v)}>
-              <span style={{ display: "block", color: "var(--muted2)" }}>
-                <Ico d={ICONS.panel} size={16} />
+              <span className="sidebar-foot-ico" aria-hidden="true">
+                {navOpen ? "«" : "»"}
               </span>
               {navOpen && (
                 <span style={{ flex: 1, textAlign: "left" }}>Colapsar menú</span>
