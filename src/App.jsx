@@ -411,6 +411,21 @@ tr.is-visible td{background:var(--surface2)}
 .td-actions{white-space:nowrap;text-align:right}
 .td-actions .btn+.btn{margin-left:8px}
 
+/*  LISTADO ANCHO
+    La lista de proyectos tiene diez columnas y no entraba sin barra
+    horizontal. Lo que sobraba no era el contenido sino el envase: los
+    encabezados en una sola linea (CENTRO DE COSTO pedia 160px para un texto
+    que ocupa 60), 12px de relleno a cada lado de diez celdas, y los dos
+    botones de la ultima columna con el aire de un formulario. Aca el relleno
+    se acorta, el encabezado parte de linea y los botones se ajustan. Mismo
+    tratamiento que .tabla-lista en Comercial.
+    Las celdas .td-mono siguen en nowrap: un importe o una fecha partidos en
+    dos renglones dejan de ser un numero.  */
+.tabla-lista th{white-space:normal;padding:8px 5px;line-height:1.3}
+.tabla-lista td{padding:10px 5px}
+.tabla-lista .btn-sm{padding:0 7px}
+.tabla-lista .td-actions .btn+.btn{margin-left:4px}
+
 /*  BADGES  */
 .badge{display:inline-flex;align-items:center;font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 8px;border-radius:3px;white-space:nowrap;letter-spacing:.12em;text-transform:uppercase}
 .b-blue{background:#E6F1F2;color:#056D76;border:0}
@@ -815,7 +830,7 @@ function TablaProyectos({ proyectos, onEditar, onBorrar, onToggleVisible, ocupad
   return (
     <div className="card card-pad0">
       <div className="table-wrap">
-        <table>
+        <table className="tabla-lista">
           <thead>
             <tr>
               <th>En módulos</th>
