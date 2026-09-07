@@ -51,10 +51,22 @@
 --
 -- NO DEPENDE DE NADA
 --
---   Ni del espejo ni de la 0038. Por eso expone `comercial_proyecto_id` y
---   no un id de public.proyectos, y el buque como texto. Cuando el espejo
---   corra se agrega el id local; cuando la 0038 este aplicada, el centro de
---   costo. Las dos cosas son un join mas, no un rediseno.
+--   Ni del espejo ni de la 0038. Por eso expone `comercial_proyecto_id` —el
+--   id que vive en Comercial— y no un id de public.proyectos, y el buque
+--   como texto. Cuando la 0038 este aplicada se le puede sumar el centro de
+--   costo: es un join mas, no un rediseno.
+--
+--   EL ESPEJO NO CORRIO. Verificado contra la base el 2026-09-07:
+--   public.proyectos NO tiene la columna comercial_proyecto_id, y sus tres
+--   filas tienen origen = 'projects', ninguna viene de Comercial. Asi que el
+--   join contra un id local todavia no existe como opcion.
+--
+--     select column_name from information_schema.columns
+--     where table_schema='public' and table_name='proyectos'
+--       and column_name='comercial_proyecto_id';   -- hoy: cero filas
+--
+--   No cambia una linea del SQL de abajo, y es justamente el punto: estas
+--   vistas leen Comercial directo, asi que sirven igual con espejo o sin el.
 --
 -- Correr desde Supabase -> SQL Editor -> Run, un bloque por vez.
 -- ============================================================
@@ -94,6 +106,18 @@ order by f.moneda;
 -- corre con los permisos de su duenio. A diferencia de aquella, aca si se
 -- exponen importes y la comision del broker: es el punto de la vista, pero
 -- conviene tenerlo presente antes de darle acceso a alguien mas.
+--
+-- Eso significa que la vista NO aplica la RLS de comercial.facturas: corre
+-- con los permisos del dueno (`postgres` si se crea desde el SQL Editor) y
+-- cualquier rol con select sobre la vista ve todas las facturas. Es lo que
+-- se quiere —Finanzas tiene que ver el total— pero es una decision, no un
+-- descuido, y el linter de Supabase la va a listar como
+-- `security_definer_view`. Ese warning es esperado: no se arregla
+-- agregandole `security_invoker = true`, porque con eso la vista deja de
+-- poder leer `comercial` y sale vacia.
+--
+-- Si alguna vez Finanzas tiene usuarios que no deban ver importes, la
+-- solucion no es tocar la vista: es no darles select sobre ella.
 -- ------------------------------------------------------------
 create or replace view public.v_fin_ingresos as
 select

@@ -40,11 +40,24 @@
 --
 -- NO DEPENDE DEL ESPEJO
 --
---   Las vistas exponen `comercial_proyecto_id`, no un id de
---   public.proyectos, porque el espejo comercial -> Finanzas todavia no
---   corrio y public.proyectos.comercial_proyecto_id no existe. Eso hace que
---   esta migracion se pueda correr ya. Cuando el espejo este, se agrega el
---   id local con un join mas.
+--   Las vistas exponen `comercial_proyecto_id`, el id que vive en Comercial,
+--   y no un id de public.proyectos. Asi esta migracion no depende del espejo
+--   comercial -> Finanzas en ningun sentido: ni de que haya corrido ni de que
+--   no.
+--
+--   VERIFICADO CONTRA LA BASE EL 2026-09-07: el espejo no corrio.
+--   public.proyectos no tiene la columna comercial_proyecto_id, y sus tres
+--   filas tienen origen = 'projects' —ninguna viene de Comercial—, mientras
+--   comercial.proyectos tiene otras cinco. Hoy no hay ningun vinculo entre
+--   las dos tablas.
+--
+--     select column_name from information_schema.columns
+--     where table_schema='public' and table_name='proyectos'
+--       and column_name='comercial_proyecto_id';   -- hoy: cero filas
+--
+--   Que no exista no es el motivo del diseno, es una circunstancia: aunque
+--   la columna apareciera manana, estas vistas seguirian exponiendo el id de
+--   Comercial para no acoplarse. Cuando exista, el id local es un join mas.
 --
 -- Correr desde Supabase -> SQL Editor -> Run, un bloque por vez.
 -- ============================================================
@@ -128,7 +141,14 @@ order by es_buque desc, nombre;
 
 -- Necesaria para el constraint de no solape: permite mezclar una igualdad
 -- (centro_costo_id) con un solape de rangos en el mismo indice.
-create extension if not exists btree_gist;
+--
+-- `with schema extensions` porque es la convencion de Supabase, que no deja
+-- extensiones en public. No es cosmetico: si la extension no estaba y se crea
+-- en public, el linter la marca; y si ya estaba en extensions, el
+-- `if not exists` la da por buena sin mover nada. Sin btree_gist instalada y
+-- alcanzable por el search_path, el `exclude using gist (... with =)` de abajo
+-- no resuelve el operator class de uuid y el constraint falla.
+create extension if not exists btree_gist with schema extensions;
 
 create table if not exists public.buque_indisponibilidades (
   id              uuid primary key default gen_random_uuid(),
