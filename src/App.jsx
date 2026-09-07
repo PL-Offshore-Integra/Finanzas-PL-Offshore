@@ -63,18 +63,36 @@ const FORM_VACIO = {
 // Comercial no es a qué buque se imputa y cuánto se espera gastar.
 const CAMPOS_ESCRITURA = ["centro_costo", "presupuesto_total"];
 
+// Las ocho empresas del grupo. La lista esta cerrada a proposito, igual que
+// el check de public.tablero_temas: un nombre mal tipeado ("Parana Port" sin
+// acento) abriria un noveno grupo en el tablero que parece una empresa y no
+// lo es.
+//
+// Agregar una empresa son DOS lugares y los dos hay que tocar: esta
+// constante y el check de la tabla. El alter esta al final de
+// sql/tablero_temas.sql. Si se toca solo el check, la empresa no aparece en
+// el desplegable; si se toca solo esto, el insert falla.
+const EMPRESAS_GRUPO = [
+  "Paraná Logística",
+  "Clean Sea",
+  "Terra Mare Services",
+  "Paraná Port",
+  "Fagal",
+  "Terra Mare",
+  "HF Offshore Argentina",
+  "Petro Trader",
+];
+
+// En minuscula en la base —como el resto de los estados del esquema— y
+// capitalizadas en pantalla. El orden es el de la reunion: alta primero.
+const PRIORIDADES = ["alta", "media", "baja"];
+const PRIORIDAD_LABEL = { alta: "Alta", media: "Media", baja: "Baja" };
+
 const NAV = [
-  {
-    titulo: "Maestros",
-    items: [
-      { id: "proyectos", label: "Proyectos" },
-      { id: "centros", label: "Centros de costo" },
-    ],
-  },
-  {
-    titulo: "Análisis",
-    items: [{ id: "consolidado", label: "Consolidado" }],
-  },
+  { id: "proyectos", label: "Proyectos" },
+  { id: "centros", label: "Centros de costo" },
+  { id: "consolidado", label: "Consolidado" },
+  { id: "tablero", label: "Tablero de Control" },
 ];
 
 // Numeros en Saira 900 en lugar de iconos. El design system no define
@@ -82,17 +100,17 @@ const NAV = [
 // numeracion, tipografia y color. La alternativa que contempla —Lucide con
 // stroke 1.5— la tiene que aprobar Marketing Corporativo, asi que no se usa.
 //
-// La numeracion corre sobre todo el menu, atravesando los grupos: es un
-// indice de secciones, no un contador por bloque. Se deriva de NAV para que
-// agregar una pantalla no obligue a renumerar a mano.
+// La numeracion corre sobre todo el menu: es un indice de secciones. Se
+// deriva de NAV para que agregar una pantalla no obligue a renumerar a mano.
 const NAV_NUM = Object.fromEntries(
-  NAV.flatMap((g) => g.items).map((it, i) => [
-    it.id,
-    String(i + 1).padStart(2, "0"),
-  ])
+  NAV.map((it, i) => [it.id, String(i + 1).padStart(2, "0")])
 );
 
 const SECCIONES = {
+  tablero: {
+    titulo: "Tablero de Control",
+    sub: "Los temas del área para la revisión semanal. Se agrupan por empresa, prioridad, responsable o fecha de vencimiento.",
+  },
   proyectos: {
     titulo: "Proyectos",
     sub: "Llegan de Comercial. Acá se les asigna centro de costo y presupuesto, y se decide cuáles pueden elegir los demás módulos.",
@@ -219,6 +237,56 @@ const api = {
     if (data?.error) throw new Error(data.error);
     return data;
   },
+
+  // --- El tablero de temas -------------------------------------------------
+
+  // Por creado_en y no por nombre: dentro de un grupo el orden de carga es
+  // el unico que no se mueve solo cuando alguien renombra un tema. El orden
+  // que se ve en pantalla lo decide el agrupador.
+  async listTemas() {
+    const { data, error } = await supabase
+      .from("tablero_temas")
+      .select(
+        "id, nombre, empresa, prioridad, responsable, vence_el, realizado, creado_en, actualizado_en"
+      )
+      .order("creado_en", { ascending: true });
+    if (error) throw error;
+    return data ?? [];
+  },
+
+  async crearTema({ nombre, empresa, prioridad, responsable, vence_el }) {
+    const { data, error } = await supabase
+      .from("tablero_temas")
+      .insert({
+        nombre: String(nombre).trim(),
+        empresa,
+        prioridad,
+        responsable: responsable?.trim() || null,
+        vence_el: vence_el || null,
+      })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return data;
+  },
+
+  // actualizado_en lo pisa la app: la tabla no tiene trigger, a proposito.
+  // Es el dato que contesta "que se movio desde la reunion pasada".
+  async actualizarTema(id, cambios) {
+    const { error } = await supabase
+      .from("tablero_temas")
+      .update({ ...cambios, actualizado_en: new Date().toISOString() })
+      .eq("id", id);
+    if (error) throw error;
+  },
+
+  async borrarTema(id) {
+    const { error } = await supabase
+      .from("tablero_temas")
+      .delete()
+      .eq("id", id);
+    if (error) throw error;
+  },
 };
 
 // ============================================================
@@ -255,6 +323,34 @@ function fmtFecha(iso) {
   const p = String(iso).slice(0, 10).split("-");
   if (p.length !== 3) return "—";
   return `${p[2]}/${p[1]}/${p[0]}`;
+}
+
+// Dias de hoy a `iso` (negativo si ya pasó). Se parsea a mano y no con
+// `new Date(iso)` porque esa forma la interpreta como UTC medianoche: en un
+// huso al oeste de Greenwich (Argentina) resta un dia y "hoy" da vencido un
+// dia antes de tiempo.
+function diasHasta(iso) {
+  if (!iso) return null;
+  const p = String(iso).slice(0, 10).split("-").map(Number);
+  if (p.length !== 3 || p.some(Number.isNaN)) return null;
+  const fecha = new Date(p[0], p[1] - 1, p[2]);
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  return Math.round((fecha - hoy) / 86400000);
+}
+
+// Los baldes de la vista "Por fecha" del tablero. Vencido primero: es lo
+// mas urgente, igual que Alta encabeza la vista por prioridad. El corte de
+// 7 y 30 dias es a ojo —una semana y un mes de calendario—, no una regla
+// del negocio.
+const BALDES_FECHA = ["Vencido", "Esta semana", "Este mes", "Más adelante", "Sin fecha"];
+function baldeFecha(t) {
+  const d = diasHasta(t.vence_el);
+  if (d === null) return "Sin fecha";
+  if (d < 0) return "Vencido";
+  if (d <= 7) return "Esta semana";
+  if (d <= 30) return "Este mes";
+  return "Más adelante";
 }
 
 // Solo se valida lo que Finanzas escribe. El nombre y las fechas los valida
@@ -353,7 +449,6 @@ a:not(.btn):hover{color:var(--amarillo)}
 .sidebar-logo-main{font:600 15px/1.3 var(--sans);color:var(--navy)}
 .sidebar-logo-sub{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-top:2px}
 .sidebar-nav{flex:1;padding:12px 0;overflow-y:auto}
-.nav-section{padding:14px 16px 8px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;text-align:left}
 .ni{display:flex;align-items:center;gap:12px;width:100%;padding:9px 16px 9px 13px;background:transparent;border:0;border-left:3px solid transparent;cursor:pointer;text-align:left;font:400 14px/1.3 var(--sans);color:var(--muted);transition:var(--tr);min-height:38px}
 .ni:hover{background:var(--surface2);color:var(--navy)}
 .ni.active{background:var(--surface2);border-left-color:var(--amarillo);color:var(--navy);font-weight:500}
@@ -478,6 +573,32 @@ tr.is-visible td{background:var(--surface2)}
    design system. */
 .form-section::after{content:"";position:absolute;left:0;bottom:-2px;width:64px;height:3px;background:var(--amarillo)}
 .form-ftr{display:flex;gap:8px;justify-content:flex-end;margin-top:24px;padding-top:16px;border-top:1px solid var(--border)}
+
+/* --- Tablero de temas --- */
+.tablero-barra{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+/* Segmentado y no dos botones: son dos formas de mirar lo mismo, no dos
+   acciones. Y no puede haber dos .btn-primary en la pantalla. */
+.seg{display:inline-flex;border:1px solid var(--border2);border-radius:var(--r);overflow:hidden}
+.seg button{background:var(--surface);border:0;border-right:1px solid var(--border2);cursor:pointer;font-family:var(--display);font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);height:32px;padding:0 14px;transition:var(--tr)}
+.seg button:last-child{border-right:0}
+.seg button:hover{background:var(--surface2);color:var(--navy)}
+.seg button.on{background:var(--navy);color:#fff}
+.grupo-tit{position:relative;display:flex;align-items:baseline;gap:10px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;color:var(--navy);text-transform:uppercase;margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.grupo-tit::after{content:"";position:absolute;left:0;bottom:-2px;width:64px;height:3px;background:var(--amarillo)}
+.grupo-tit .cuenta{font-family:var(--sans);font-size:12px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted2)}
+/* El select de la celda: mas bajo que el del formulario, porque va dentro de
+   una fila de tabla y no de un .fg. */
+.sel-inline{background:var(--surface);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);font-family:var(--sans);font-size:13px;height:30px;padding:0 8px;max-width:100%;outline:none;transition:var(--tr)}
+.sel-inline:hover{border-color:var(--navy)}
+.sel-inline:focus{border-color:var(--navy);outline:2px solid var(--amarillo);outline-offset:2px}
+.sel-inline:disabled{background:var(--surface2);color:var(--muted);cursor:not-allowed}
+tr.is-realizado td{color:var(--muted)}
+/* Los recuadros de arriba del tablero, cuando filtran. El acento es la barra
+   amarilla a la izquierda, igual que el item activo del menu: se marca el
+   estado sin cambiar el tamano del recuadro ni moverlo de lugar. */
+.stat-btn{display:block;width:100%;text-align:left;font-family:var(--sans);cursor:pointer;transition:var(--tr)}
+.stat-btn:hover{border-color:var(--navy)}
+.stat-btn.on{border-color:var(--navy);box-shadow:inset 3px 0 0 var(--amarillo)}
 
 .empty{padding:48px 24px;text-align:center;color:var(--muted);font-size:14px}
 .empty-mono{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;color:var(--muted2);margin-bottom:8px}
@@ -1137,6 +1258,701 @@ function PageProyectos({ formAbierto, setFormAbierto }) {
   );
 }
 
+// ============================================================
+// TABLERO DE CONTROL — los temas del area
+//
+// Pedido para la revision semanal con Juan: cada tema con su empresa y su
+// prioridad, y poder mirarlo agrupado por una o por otra.
+//
+// Se edita en la propia fila, sin abrir un formulario: en una reunion de
+// media hora, abrir y cerrar un modal por cada cambio de prioridad no se
+// hace, y lo que no se hace no queda registrado.
+//
+// Los datos viven en public.tablero_temas (sql/tablero_temas.sql). No en el
+// navegador: el tablero es de dos personas, y guardarlo local seria que Juan
+// abra el modulo y vea otra cosa.
+// ============================================================
+
+function PageTablero() {
+  const [temas, setTemas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState(null);
+  const [ok, setOk] = useState(null);
+  const [agrupar, setAgrupar] = useState("empresa");
+  const [abierto, setAbierto] = useState(false);
+  const [verRealizados, setVerRealizados] = useState(false);
+  // Filtro que nace de los recuadros de arriba: null = todo. Se combina con
+  // el agrupador, no lo reemplaza —"los Alta, agrupados por responsable" es
+  // justo la pregunta de la reunion.
+  const [filtro, setFiltro] = useState(null);
+  const [alta, setAlta] = useState({
+    nombre: "",
+    empresa: EMPRESAS_GRUPO[0],
+    prioridad: "media",
+    responsable: "",
+    vence_el: "",
+  });
+
+  const load = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      setTemas(await api.listTemas());
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Un tema realizado sale del tablero activo: no se borra, se apaga. Asi
+  // queda el historial de que se trato sin que la reunion siguiente tenga
+  // que volver a mirarlo.
+  const activos = useMemo(() => temas.filter((t) => !t.realizado), [temas]);
+  const realizados = useMemo(() => temas.filter((t) => t.realizado), [temas]);
+
+  const cuenta = useMemo(() => {
+    const c = { alta: 0, media: 0, baja: 0 };
+    for (const t of activos) if (c[t.prioridad] !== undefined) c[t.prioridad] += 1;
+    return c;
+  }, [activos]);
+
+  const vencidos = useMemo(
+    () => activos.filter((t) => baldeFecha(t) === "Vencido").length,
+    [activos]
+  );
+
+  // Lo que se dibuja abajo. Los recuadros de arriba siguen contando sobre
+  // `activos` y no sobre esto: si el filtro les cambiara el numero, apretar
+  // "Alta" pondria los otros tres en cero y se perderia la referencia.
+  const visibles = useMemo(() => {
+    if (!filtro) return activos;
+    if (filtro.tipo === "vencidos")
+      return activos.filter((t) => baldeFecha(t) === "Vencido");
+    return activos.filter((t) => t.prioridad === filtro.valor);
+  }, [activos, filtro]);
+
+  const filtroLabel = !filtro
+    ? null
+    : filtro.tipo === "vencidos"
+    ? "Vencidos"
+    : "Prioridad " + (PRIORIDAD_LABEL[filtro.valor] ?? filtro.valor);
+
+  // Apretar el recuadro que ya esta activo lo apaga: el mismo boton prende y
+  // suelta, asi no hace falta buscar donde se quita.
+  function alternarFiltro(nuevo) {
+    setFiltro((prev) =>
+      prev && prev.tipo === nuevo.tipo && prev.valor === nuevo.valor
+        ? null
+        : nuevo
+    );
+  }
+
+  const grupos = useMemo(() => {
+    const peso = (t) => {
+      const i = PRIORIDADES.indexOf(t.prioridad);
+      return i < 0 ? PRIORIDADES.length : i;
+    };
+
+    // "Por responsable" no tiene lista fija: los grupos son los nombres que
+    // efectivamente hay cargados. Es texto libre, asi que "Juan" y "juan "
+    // serian dos grupos distintos —se normaliza el espacio al comparar, pero
+    // no la capitalizacion: si alguien escribio dos variantes, mostrarlas
+    // separadas es mas honesto que unificarlas y elegir una por el modelo.
+    if (agrupar === "responsable") {
+      const cmp = (a, b) =>
+        peso(a) - peso(b) || a.nombre.localeCompare(b.nombre, "es");
+      const de = (t) => (t.responsable ?? "").trim();
+
+      const nombres = [...new Set(visibles.map(de).filter(Boolean))].sort((a, b) =>
+        a.localeCompare(b, "es")
+      );
+
+      const out = [];
+      for (const nombre of nombres) {
+        const filas = visibles.filter((t) => de(t) === nombre).sort(cmp);
+        if (filas.length) out.push({ clave: nombre, filas });
+      }
+
+      // Al final y no primero: un tema sin dueño es lo que hay que repartir
+      // en la reunion, pero el orden lo encabezan los que ya tienen alguien.
+      const sinDueno = visibles.filter((t) => !de(t)).sort(cmp);
+      if (sinDueno.length)
+        out.push({ clave: "Sin responsable", filas: sinDueno });
+
+      return out;
+    }
+
+    // "Por fecha" agrupa distinto a las otras dos: los baldes son fijos
+    // (Vencido / Esta semana / Este mes / Más adelante / Sin fecha) y no
+    // vienen de una constante de catálogo, así que no hay "sueltos": todo
+    // tema cae en alguno de los cinco, con o sin vence_el.
+    if (agrupar === "fecha") {
+      const cmpFecha = (a, b) =>
+        a.vence_el && b.vence_el
+          ? a.vence_el.localeCompare(b.vence_el) ||
+            a.nombre.localeCompare(b.nombre, "es")
+          : a.nombre.localeCompare(b.nombre, "es");
+
+      const out = [];
+      for (const balde of BALDES_FECHA) {
+        const filas = visibles.filter((t) => baldeFecha(t) === balde).sort(cmpFecha);
+        if (filas.length) out.push({ clave: balde, filas });
+      }
+      return out;
+    }
+
+    const porEmpresa = agrupar === "empresa";
+    const orden = porEmpresa ? EMPRESAS_GRUPO : PRIORIDADES;
+    const clave = (t) => (porEmpresa ? t.empresa : t.prioridad);
+
+    // Dentro de un grupo se ordena por el OTRO criterio: agrupado por
+    // empresa, lo urgente queda arriba; agrupado por prioridad, los temas de
+    // una misma empresa quedan juntos. `peso` está declarado más arriba: lo
+    // comparten esta rama y la de responsable.
+    const cmp = (a, b) =>
+      porEmpresa
+        ? peso(a) - peso(b) || a.nombre.localeCompare(b.nombre, "es")
+        : a.empresa.localeCompare(b.empresa, "es") ||
+          a.nombre.localeCompare(b.nombre, "es");
+
+    // Los grupos vacios no se dibujan: la cuenta por prioridad ya esta
+    // arriba, y ocho encabezados sin filas es ruido, no informacion.
+    const out = [];
+    for (const g of orden) {
+      const filas = visibles.filter((t) => clave(t) === g).sort(cmp);
+      if (filas.length) out.push({ clave: g, filas });
+    }
+
+    // Un valor fuera de la lista no se puede cargar desde esta pantalla,
+    // pero si por SQL. Va al final en vez de desaparecer del tablero.
+    const sueltos = visibles.filter((t) => !orden.includes(clave(t))).sort(cmp);
+    if (sueltos.length)
+      out.push({ clave: "Sin clasificar", filas: sueltos, huerfano: true });
+
+    return out;
+  }, [visibles, agrupar]);
+
+  // Optimista: el select ya se movio en pantalla y esperar el round-trip para
+  // reflejarlo se lee como que no tomo el cambio. Si la base lo rechaza, el
+  // catch recarga y la fila vuelve a lo que dice la base.
+  async function cambiar(tema, campo, valor) {
+    if (tema[campo] === valor) return;
+    setTemas((prev) =>
+      prev.map((t) => (t.id === tema.id ? { ...t, [campo]: valor } : t))
+    );
+    setError(null);
+    setOk(null);
+    try {
+      await api.actualizarTema(tema.id, { [campo]: valor });
+    } catch (err) {
+      setError(mensajeError(err));
+      await load();
+    }
+  }
+
+  // El responsable se guarda al salir del campo, no en cada tecla: es texto
+  // libre, y llamar a la API en cada letra no aporta nada y multiplica los
+  // round-trips. El "key" del input (mas abajo) lo remonta cuando cambia el
+  // valor de la base, asi un guardado o un load() no dejan el campo
+  // mostrando algo que ya no es cierto.
+  async function guardarResponsable(tema, valorCrudo) {
+    const valor = valorCrudo.trim() || null;
+    if ((tema.responsable ?? null) === valor) return;
+    setTemas((prev) =>
+      prev.map((t) => (t.id === tema.id ? { ...t, responsable: valor } : t))
+    );
+    setError(null);
+    setOk(null);
+    try {
+      await api.actualizarTema(tema.id, { responsable: valor });
+    } catch (err) {
+      setError(mensajeError(err));
+      await load();
+    }
+  }
+
+  async function agregar() {
+    const nombre = alta.nombre.trim();
+    if (!nombre) {
+      setError("El tema necesita un nombre.");
+      return;
+    }
+    setGuardando(true);
+    setError(null);
+    setOk(null);
+    try {
+      await api.crearTema({ ...alta, nombre });
+      // Se limpian nombre, responsable y vencimiento, pero no la empresa ni
+      // la prioridad: cuando se carga una tanda, suelen ser de la misma
+      // empresa, y cada tema nuevo suele tener a alguien y una fecha
+      // distintos.
+      setAlta((prev) => ({ ...prev, nombre: "", responsable: "", vence_el: "" }));
+      await load();
+      setOk("Tema agregado.");
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  async function borrar(t) {
+    const confirmado = window.confirm(
+      "¿Borrar el tema “" + t.nombre + "”? No se puede recuperar."
+    );
+    if (!confirmado) return;
+    setGuardando(true);
+    setError(null);
+    setOk(null);
+    try {
+      await api.borrarTema(t.id);
+      setOk("Tema borrado.");
+      await load();
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  if (cargando) {
+    return (
+      <div className="card card-pad0">
+        <div className="empty">
+          <div className="empty-mono">Cargando</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <Note tipo="err">{error}</Note>
+      <Note tipo="ok">{ok}</Note>
+
+      {/* Los recuadros son botones: filtran el tablero de abajo. El que esta
+          aplicado queda marcado, y volver a apretarlo lo suelta. "Temas
+          abiertos" es el sin-filtro, asi que esta marcado cuando no hay
+          ninguno puesto. */}
+      <div className="stats">
+        {PRIORIDADES.map((p) => {
+          const on = filtro?.tipo === "prioridad" && filtro.valor === p;
+          return (
+            <button
+              key={p}
+              className={`stat stat-btn ${on ? "on" : ""}`}
+              aria-pressed={on}
+              // El nombre del boton lo armaria el navegador con el texto de
+              // adentro, pero queda como "Prioridad Alta 2": dos datos
+              // pegados sin relacion. Dicho asi se entiende que hace.
+              aria-label={`Filtrar por prioridad ${PRIORIDAD_LABEL[p]} (${cuenta[p]})`}
+              onClick={() => alternarFiltro({ tipo: "prioridad", valor: p })}
+            >
+              <div className="stat-label">Prioridad {PRIORIDAD_LABEL[p]}</div>
+              <div className="stat-value">{cuenta[p]}</div>
+            </button>
+          );
+        })}
+        <button
+          className={`stat stat-btn ${filtro?.tipo === "vencidos" ? "on" : ""}`}
+          aria-pressed={filtro?.tipo === "vencidos"}
+          aria-label={`Filtrar por vencidos (${vencidos})`}
+          onClick={() => alternarFiltro({ tipo: "vencidos" })}
+        >
+          <div className="stat-label">Vencidos</div>
+          <div className="stat-value">{vencidos}</div>
+        </button>
+        <button
+          className={`stat stat-btn ${!filtro ? "on" : ""}`}
+          aria-pressed={!filtro}
+          aria-label={`Ver todos los temas abiertos (${activos.length})`}
+          onClick={() => setFiltro(null)}
+        >
+          <div className="stat-label">Temas abiertos</div>
+          <div className="stat-value">{activos.length}</div>
+        </button>
+      </div>
+
+      {filtro && (
+        <Note tipo="info">
+          Mostrando <strong>{filtroLabel}</strong>: {visibles.length} de{" "}
+          {activos.length} temas abiertos.
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ marginLeft: 12, verticalAlign: "middle" }}
+            onClick={() => setFiltro(null)}
+          >
+            Ver todos
+          </button>
+        </Note>
+      )}
+
+      <div className="tablero-barra">
+        <div className="seg" role="group" aria-label="Agrupar el tablero">
+          <button
+            className={agrupar === "empresa" ? "on" : ""}
+            aria-pressed={agrupar === "empresa"}
+            onClick={() => setAgrupar("empresa")}
+          >
+            Por empresa
+          </button>
+          <button
+            className={agrupar === "prioridad" ? "on" : ""}
+            aria-pressed={agrupar === "prioridad"}
+            onClick={() => setAgrupar("prioridad")}
+          >
+            Por prioridad
+          </button>
+          <button
+            className={agrupar === "responsable" ? "on" : ""}
+            aria-pressed={agrupar === "responsable"}
+            onClick={() => setAgrupar("responsable")}
+          >
+            Por responsable
+          </button>
+          <button
+            className={agrupar === "fecha" ? "on" : ""}
+            aria-pressed={agrupar === "fecha"}
+            onClick={() => setAgrupar("fecha")}
+          >
+            Por fecha
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {realizados.length > 0 && (
+            <button
+              className="btn btn-ghost"
+              onClick={() => setVerRealizados((v) => !v)}
+            >
+              {verRealizados
+                ? "Ocultar realizados"
+                : realizados.length === 1
+                ? "Ver 1 realizado"
+                : `Ver ${realizados.length} realizados`}
+            </button>
+          )}
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              setAbierto((v) => !v);
+              setError(null);
+              setOk(null);
+            }}
+          >
+            {abierto ? "Cancelar" : "Agregar tema"}
+          </button>
+        </div>
+      </div>
+
+      {abierto && (
+        <div className="card">
+          <div className="form-section">Tema nuevo</div>
+          <div className="form-grid">
+            <div className="fg">
+              <label htmlFor="tema-nombre">Tema</label>
+              <input
+                id="tema-nombre"
+                value={alta.nombre}
+                maxLength={200}
+                placeholder="De qué se trata"
+                onChange={(e) => setAlta({ ...alta, nombre: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") agregar();
+                }}
+              />
+            </div>
+            <div className="fg">
+              <label htmlFor="tema-empresa">Empresa</label>
+              <select
+                id="tema-empresa"
+                value={alta.empresa}
+                onChange={(e) => setAlta({ ...alta, empresa: e.target.value })}
+              >
+                {EMPRESAS_GRUPO.map((em) => (
+                  <option key={em} value={em}>
+                    {em}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="fg">
+              <label htmlFor="tema-prioridad">Prioridad</label>
+              <select
+                id="tema-prioridad"
+                value={alta.prioridad}
+                onChange={(e) => setAlta({ ...alta, prioridad: e.target.value })}
+              >
+                {PRIORIDADES.map((p) => (
+                  <option key={p} value={p}>
+                    {PRIORIDAD_LABEL[p]}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="fg">
+              <label htmlFor="tema-responsable">Responsable</label>
+              <input
+                id="tema-responsable"
+                value={alta.responsable}
+                maxLength={200}
+                placeholder="Opcional"
+                onChange={(e) =>
+                  setAlta({ ...alta, responsable: e.target.value })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") agregar();
+                }}
+              />
+            </div>
+            <div className="fg">
+              <label htmlFor="tema-vence">Vencimiento</label>
+              <input
+                id="tema-vence"
+                type="date"
+                value={alta.vence_el}
+                onChange={(e) =>
+                  setAlta({ ...alta, vence_el: e.target.value })
+                }
+              />
+              <span className="hint">Opcional</span>
+            </div>
+          </div>
+          <div className="form-ftr">
+            <button
+              className="btn btn-primary"
+              onClick={agregar}
+              disabled={guardando || !alta.nombre.trim()}
+            >
+              {guardando ? "Guardando" : "Agregar"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {activos.length === 0 ? (
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">
+              {temas.length === 0 ? "Tablero vacío" : "Sin temas abiertos"}
+            </div>
+            {temas.length === 0
+              ? "Todavía no hay temas cargados. Se agregan con el botón de arriba y quedan guardados para la próxima reunión."
+              : "Todos los temas cargados están marcados como realizados."}
+          </div>
+        </div>
+      ) : visibles.length === 0 ? (
+        // Pasa al apretar un recuadro que marca cero: "Vencidos 0" es un
+        // boton valido y tiene que contestar algo, no dejar la pantalla en
+        // blanco.
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Ningún tema en {filtroLabel}</div>
+            Hay {activos.length}{" "}
+            {activos.length === 1 ? "tema abierto" : "temas abiertos"}, pero
+            ninguno entra en este filtro.
+          </div>
+        </div>
+      ) : (
+        grupos.map((g) => (
+          <div className="card" key={g.clave}>
+            <div className="grupo-tit">
+              <span>
+                {agrupar === "prioridad" && !g.huerfano
+                  ? PRIORIDAD_LABEL[g.clave]
+                  : g.clave}
+              </span>
+              <span className="cuenta">
+                {g.filas.length === 1 ? "1 tema" : g.filas.length + " temas"}
+              </span>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: 34 }}>Hecho</th>
+                    <th>Tema</th>
+                    <th>Empresa</th>
+                    <th>Responsable</th>
+                    <th>Prioridad</th>
+                    <th>Vence</th>
+                    <th aria-label="Acciones" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {/* Las dos columnas editables estan en las dos vistas,
+                      incluida la que agrupa. Cambiar ahi la empresa de un
+                      tema lo manda al grupo de al lado, que es justo la
+                      operacion que se hace en la reunion. */}
+                  {g.filas.map((t) => (
+                    <tr key={t.id}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          disabled={guardando}
+                          aria-label={"Marcar realizado " + t.nombre}
+                          onChange={() => cambiar(t, "realizado", true)}
+                        />
+                      </td>
+                      <td>{t.nombre}</td>
+                      <td>
+                        <select
+                          className="sel-inline"
+                          value={t.empresa}
+                          disabled={guardando}
+                          aria-label={"Empresa de " + t.nombre}
+                          onChange={(e) => cambiar(t, "empresa", e.target.value)}
+                        >
+                          {EMPRESAS_GRUPO.map((em) => (
+                            <option key={em} value={em}>
+                              {em}
+                            </option>
+                          ))}
+                          {/* Un valor cargado por SQL fuera de las ocho: sin
+                              esta opcion el select mostraria otro y daria a
+                              entender un valor que no esta guardado. */}
+                          {!EMPRESAS_GRUPO.includes(t.empresa) && (
+                            <option value={t.empresa}>{t.empresa}</option>
+                          )}
+                        </select>
+                      </td>
+                      <td>
+                        {/* defaultValue + key: no controlado por cada tecla.
+                            El key remonta el input cuando el valor de base
+                            cambia (guardado o load()), asi nunca muestra un
+                            texto a medio escribir que ya no es cierto. */}
+                        <input
+                          key={t.id + ":" + (t.responsable ?? "")}
+                          className="sel-inline"
+                          defaultValue={t.responsable ?? ""}
+                          maxLength={200}
+                          placeholder="Sin asignar"
+                          disabled={guardando}
+                          aria-label={"Responsable de " + t.nombre}
+                          onBlur={(e) => guardarResponsable(t, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") e.currentTarget.blur();
+                          }}
+                        />
+                      </td>
+                      <td>
+                        <select
+                          className="sel-inline"
+                          value={t.prioridad}
+                          disabled={guardando}
+                          aria-label={"Prioridad de " + t.nombre}
+                          onChange={(e) =>
+                            cambiar(t, "prioridad", e.target.value)
+                          }
+                        >
+                          {PRIORIDADES.map((p) => (
+                            <option key={p} value={p}>
+                              {PRIORIDAD_LABEL[p]}
+                            </option>
+                          ))}
+                          {!PRIORIDADES.includes(t.prioridad) && (
+                            <option value={t.prioridad}>{t.prioridad}</option>
+                          )}
+                        </select>
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <input
+                            type="date"
+                            className="sel-inline"
+                            value={t.vence_el ?? ""}
+                            disabled={guardando}
+                            aria-label={"Vencimiento de " + t.nombre}
+                            onChange={(e) =>
+                              cambiar(t, "vence_el", e.target.value || null)
+                            }
+                          />
+                          {/* El badge repite lo que ya agrupa la vista "Por
+                              fecha", pero visible tambien en las otras dos:
+                              en la reunion no siempre se mira agrupado por
+                              fecha, y un vencido no se puede pasar por alto
+                              solo porque hoy se esta mirando por empresa. */}
+                          {baldeFecha(t) === "Vencido" && (
+                            <span className="badge b-red">Vencido</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="td-actions">
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => borrar(t)}
+                          disabled={guardando}
+                        >
+                          Borrar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))
+      )}
+
+      {/* Los realizados no se borran ni desaparecen del todo: quedan un
+          click abajo, de solo lectura salvo el botón para reabrirlos. Un
+          tema que se cerró por error tiene que poder volver. */}
+      {verRealizados && realizados.length > 0 && (
+        <div className="card card-pad0">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Tema</th>
+                  <th>Empresa</th>
+                  <th>Responsable</th>
+                  <th>Prioridad</th>
+                  <th>Vencía</th>
+                  <th aria-label="Acciones" />
+                </tr>
+              </thead>
+              <tbody>
+                {realizados.map((t) => (
+                  <tr key={t.id} className="is-realizado">
+                    <td>{t.nombre}</td>
+                    <td>{t.empresa}</td>
+                    <td>{t.responsable || "—"}</td>
+                    <td>{PRIORIDAD_LABEL[t.prioridad] ?? t.prioridad}</td>
+                    <td>{fmtFecha(t.vence_el)}</td>
+                    <td className="td-actions">
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => cambiar(t, "realizado", false)}
+                        disabled={guardando}
+                      >
+                        Reabrir
+                      </button>
+                      <button
+                        className="btn btn-danger btn-sm"
+                        onClick={() => borrar(t)}
+                        disabled={guardando}
+                      >
+                        Borrar
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function PageConsolidado() {
   return (
     <div className="card card-pad0">
@@ -1576,24 +2392,19 @@ export default function App() {
           </div>
 
           <div className="sidebar-nav">
-            {NAV.map((grupo) => (
-              <div key={grupo.titulo} style={{ marginBottom: 8 }}>
-                {navOpen && <div className="nav-section">{grupo.titulo}</div>}
-                {grupo.items.map((it) => (
-                  <button
-                    key={it.id}
-                    className={`ni ${page === it.id ? "active" : ""}`}
-                    onClick={() => {
-                      setPage(it.id);
-                      setFormAbierto(false);
-                    }}
-                    title={it.label}
-                  >
-                    <span className="ni-num">{NAV_NUM[it.id]}</span>
-                    {navOpen && <span className="ni-label">{it.label}</span>}
-                  </button>
-                ))}
-              </div>
+            {NAV.map((it) => (
+              <button
+                key={it.id}
+                className={`ni ${page === it.id ? "active" : ""}`}
+                onClick={() => {
+                  setPage(it.id);
+                  setFormAbierto(false);
+                }}
+                title={it.label}
+              >
+                <span className="ni-num">{NAV_NUM[it.id]}</span>
+                {navOpen && <span className="ni-label">{it.label}</span>}
+              </button>
             ))}
           </div>
 
@@ -1640,6 +2451,7 @@ export default function App() {
           </div>
 
           <div className="content">
+            {page === "tablero" && <PageTablero />}
             {page === "proyectos" && (
               <PageProyectos
                 formAbierto={formAbierto}
