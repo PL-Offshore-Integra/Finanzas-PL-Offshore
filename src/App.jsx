@@ -69,11 +69,11 @@ const MODULOS_CENTRO_COSTO = [
 ];
 
 const NAV = [
-  { id: "centros", label: "Centros de costo" },
+  { id: "tablero", label: "Tablero de Control" },
+  { id: "consolidado", label: "P&L" },
   { id: "tipo_cambio", label: "Tipo de cambio" },
   { id: "carga_manual", label: "Carga Manual" },
-  { id: "consolidado", label: "P&L" },
-  { id: "tablero", label: "Tablero de Control" },
+  { id: "centros", label: "Centros de costo" },
 ];
 
 // Numeros en Saira 900 en lugar de iconos. El design system no define
