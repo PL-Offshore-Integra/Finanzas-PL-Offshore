@@ -8,7 +8,7 @@
 // Estética: INTEGRA Brand Book v1.0 (misma que projects-app).
 // ============================================================
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { supabase } from "./supabaseClient";
 
 // ============================================================
@@ -154,6 +154,20 @@ const api = {
     const { data, error } = await supabase
       .from("v_pl_mensual")
       .select("mes, segmento, centro_costo_id, centro_costo, categoria, subcategoria, monto_usd")
+      .order("mes", { ascending: true });
+    if (error) throw error;
+    return data ?? [];
+  },
+
+  // Igual que arriba pero sin agregar por categoria: trae la cuenta de
+  // cada movimiento. v_pl_mensual no la expone porque agrupa por categoria
+  // (es lo que necesita la cascada); esta es la que arma el desglose
+  // cuando se abre un renglón. No incluye Facturación (esa no tiene
+  // cuenta de plan_de_cuentas, sale de comercial.facturas).
+  async listPLCostosMensual() {
+    const { data, error } = await supabase
+      .from("v_pl_costos_mensual")
+      .select("mes, segmento, centro_costo_id, centro_costo, cuenta, categoria, subcategoria, monto_usd")
       .order("mes", { ascending: true });
     if (error) throw error;
     return data ?? [];
@@ -1577,7 +1591,7 @@ function construirCascada(cascada, filasAnio) {
       if (!arr) continue;
       for (let i = 0; i < 12; i++) meses[i] += arr[i];
     }
-    filas.push({ label: linea.label, meses, esSubtotal: false });
+    filas.push({ label: linea.label, meses, esSubtotal: false, categorias: linea.categorias });
     for (let i = 0; i < 12; i++) acumulado[i] += meses[i];
     if (linea.subtotal) {
       filas.push({ label: linea.subtotal, meses: [...acumulado], esSubtotal: true });
@@ -1586,19 +1600,42 @@ function construirCascada(cascada, filasAnio) {
   return filas;
 }
 
+// El desglose de un renglón: qué cuentas de plan_de_cuentas componen esa(s)
+// categoria(s), mes a mes. Es lo mismo que arma construirCascada pero sin
+// agrupar por categoria — agrupa por cuenta. filasCuentaAnio sale de
+// v_pl_costos_mensual (api.listPLCostosMensual), ya filtrado por
+// segmento/buque/año igual que filasAnio en construirCascada.
+function desglosePorCuenta(categorias, filasCuentaAnio) {
+  const porCuenta = new Map();
+  for (const f of filasCuentaAnio) {
+    if (!categorias.includes(f.categoria)) continue;
+    const idx = Number(String(f.mes).slice(5, 7)) - 1;
+    if (idx < 0 || idx > 11) continue;
+    if (!porCuenta.has(f.cuenta)) porCuenta.set(f.cuenta, Array(12).fill(0));
+    porCuenta.get(f.cuenta)[idx] += Number(f.monto_usd || 0);
+  }
+  return [...porCuenta.entries()]
+    .map(([cuenta, meses]) => ({ cuenta, meses, total: meses.reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+}
+
 function PagePL() {
   const [filas, setFilas] = useState([]);
+  const [filasCuenta, setFilasCuenta] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
   const [anio, setAnio] = useState(null);
   const [segmento, setSegmento] = useState("consolidado");
   const [buque, setBuque] = useState(null); // null = consolidado de la flota
+  const [filaAbierta, setFilaAbierta] = useState(null); // indice de la fila con el desglose por cuenta abierto
 
   const load = useCallback(async () => {
     setCargando(true);
     setError(null);
     try {
-      setFilas(await api.listPLMensual());
+      const [pl, costos] = await Promise.all([api.listPLMensual(), api.listPLCostosMensual()]);
+      setFilas(pl);
+      setFilasCuenta(costos);
     } catch (err) {
       setError(mensajeError(err));
     } finally {
@@ -1609,6 +1646,12 @@ function PagePL() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Cambiar de año, pestaña o buque invalida el índice de la fila abierta
+  // (la cascada se vuelve a armar y puede tener otra cantidad de renglones).
+  useEffect(() => {
+    setFilaAbierta(null);
+  }, [anio, segmento, buque]);
 
   const anios = useMemo(() => {
     const s = new Set(filas.map((f) => String(f.mes).slice(0, 4)));
@@ -1642,6 +1685,19 @@ function PagePL() {
     [filasDelSegmento, anio]
   );
 
+  // Mismo filtro que filasDelAnio pero sobre el detalle por cuenta: lo que
+  // alimenta el desglose cuando se abre un renglón de la cascada.
+  const filasCuentaDelAnio = useMemo(
+    () =>
+      filasCuenta.filter(
+        (f) =>
+          f.segmento === segmento &&
+          (segmento !== "buque" || !buque || f.centro_costo === buque) &&
+          String(f.mes).slice(0, 4) === anio
+      ),
+    [filasCuenta, segmento, buque, anio]
+  );
+
   // Para "consolidado" hace falta el año entero sin filtrar por segmento:
   // se arma sumando el resultado final de los otros tres, no filtrando una
   // categoria propia (no existe tal cosa como una fila con
@@ -1665,6 +1721,31 @@ function PagePL() {
     const centros = [...new Set(filasSinSeg.map((f) => f.centro_costo).filter(Boolean))];
     return { total, centros };
   }, [filasAnioTotal]);
+
+  // Costo Embarcados (sueldo de tripulación) no sale de Xubio: viene de
+  // otra fuente que todavía no está conectada, así que hoy siempre entra
+  // en pl_movimientos "a mano" o directamente no entra. Se avisa mes por
+  // mes, mirando toda la flota (sin filtrar por el selector de buque, para
+  // no repetir el mismo aviso 8 veces si nadie cargó nada en ningún
+  // buque): un mes "falta" cuando hubo actividad de flota (facturación o
+  // cualquier costo) pero el acumulado de costo_embarcados de ese mes es
+  // cero.
+  const mesesSinEmbarcados = useMemo(() => {
+    if (segmento !== "buque" && !esConsolidado) return [];
+    const porMes = Array.from({ length: 12 }, () => ({ actividad: 0, embarcados: 0 }));
+    for (const f of filasAnioTotal) {
+      if (f.segmento !== "buque") continue;
+      const idx = Number(String(f.mes).slice(5, 7)) - 1;
+      if (idx < 0 || idx > 11) continue;
+      const m = Number(f.monto_usd || 0);
+      porMes[idx].actividad += Math.abs(m);
+      if (f.categoria === "costo_embarcados") porMes[idx].embarcados += m;
+    }
+    return porMes
+      .map((v, i) => ({ i, ...v }))
+      .filter((v) => v.actividad > 0.5 && Math.abs(v.embarcados) < 0.5)
+      .map((v) => MESES_LABEL[v.i]);
+  }, [filasAnioTotal, segmento, esConsolidado]);
 
   // El consolidado que le faltaba a la pantalla: Σ Resultado Financiero de
   // cada buque + Resultado de Astillero − Total SG&A de Corporativo. Es
@@ -1826,6 +1907,15 @@ function PagePL() {
         </div>
       </div>
 
+      {mesesSinEmbarcados.length > 0 && (
+        <Note tipo="warn">
+          Costo Embarcados sin cargar en {mesesSinEmbarcados.join(", ")} de {anio}:
+          esa data no sale de Xubio, viene de otra fuente todavía no
+          conectada. El resultado de esos meses está incompleto hasta que se
+          cargue el sueldo real de tripulación (por ahora, en Carga Manual).
+        </Note>
+      )}
+
       {Math.abs(sinSegmento.total) > 0.5 && (
         <Note tipo="warn">
           {fmtUSD(sinSegmento.total)} USD de {anio} quedan FUERA de las cuatro
@@ -1883,26 +1973,66 @@ function PagePL() {
               </tr>
             </thead>
             <tbody>
-              {cascada.map((f, i) => (
-                <tr
-                  key={i}
-                  style={
-                    f.esSubtotal
-                      ? { borderTop: "1px solid var(--border)", fontWeight: 700 }
-                      : undefined
-                  }
-                >
-                  <td>{f.label}</td>
-                  {f.meses.map((v, mi) => (
-                    <td key={mi} className="td-mono" style={{ textAlign: "right" }}>
-                      {v ? fmtUSD(v) : "—"}
-                    </td>
-                  ))}
-                  <td className="td-mono" style={{ textAlign: "right", fontWeight: f.esSubtotal ? 700 : 400 }}>
-                    {fmtUSD(f.meses.reduce((a, b) => a + b, 0))}
-                  </td>
-                </tr>
-              ))}
+              {cascada.map((f, i) => {
+                // Facturación no tiene desglose acá: sale de
+                // comercial.facturas, no de plan_de_cuentas, así que
+                // v_pl_costos_mensual no trae nada para esas categorias.
+                const esClickeable =
+                  !f.esSubtotal &&
+                  f.categorias?.length > 0 &&
+                  !f.categorias.includes("ingreso") &&
+                  !f.categorias.includes("ingreso_astillero");
+                const abierta = esClickeable && filaAbierta === i;
+                const desglose = abierta ? desglosePorCuenta(f.categorias, filasCuentaDelAnio) : null;
+                return (
+                  <Fragment key={i}>
+                    <tr
+                      style={{
+                        ...(f.esSubtotal
+                          ? { borderTop: "1px solid var(--border)", fontWeight: 700 }
+                          : undefined),
+                        cursor: esClickeable ? "pointer" : undefined,
+                      }}
+                      onClick={esClickeable ? () => setFilaAbierta(abierta ? null : i) : undefined}
+                    >
+                      <td>
+                        {esClickeable && <span style={{ color: "var(--muted2)", marginRight: 6 }}>{abierta ? "▾" : "▸"}</span>}
+                        {f.label}
+                      </td>
+                      {f.meses.map((v, mi) => (
+                        <td key={mi} className="td-mono" style={{ textAlign: "right" }}>
+                          {v ? fmtUSD(v) : "—"}
+                        </td>
+                      ))}
+                      <td className="td-mono" style={{ textAlign: "right", fontWeight: f.esSubtotal ? 700 : 400 }}>
+                        {fmtUSD(f.meses.reduce((a, b) => a + b, 0))}
+                      </td>
+                    </tr>
+                    {abierta &&
+                      (desglose.length > 0 ? (
+                        desglose.map((d, di) => (
+                          <tr key={`d${di}`} style={{ background: "var(--surface2)" }}>
+                            <td style={{ paddingLeft: 32, color: "var(--muted)", fontSize: 13 }}>{d.cuenta}</td>
+                            {d.meses.map((v, mi) => (
+                              <td key={mi} className="td-mono" style={{ textAlign: "right", color: "var(--muted)", fontSize: 13 }}>
+                                {v ? fmtUSD(v) : "—"}
+                              </td>
+                            ))}
+                            <td className="td-mono" style={{ textAlign: "right", color: "var(--muted)", fontSize: 13 }}>
+                              {fmtUSD(d.total)}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr style={{ background: "var(--surface2)" }}>
+                          <td colSpan={14} style={{ padding: "8px 16px 8px 32px", color: "var(--muted)", fontStyle: "italic", fontSize: 13 }}>
+                            Sin movimientos cargados para este renglón en {anio}.
+                          </td>
+                        </tr>
+                      ))}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
