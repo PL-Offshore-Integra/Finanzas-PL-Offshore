@@ -74,6 +74,7 @@ const NAV = [
   { id: "tipo_cambio", label: "Tipo de cambio" },
   { id: "carga_manual", label: "Carga Manual" },
   { id: "centros", label: "Centros de costo" },
+  { id: "facturacion", label: "Facturación" },
 ];
 
 // Numeros en Saira 900 en lugar de iconos. El design system no define
@@ -107,6 +108,10 @@ const SECCIONES = {
   consolidado: {
     titulo: "P&L",
     sub: "La facturación de Comercial, en USD Oficial, por mes, centro de costo y proyecto.",
+  },
+  facturacion: {
+    titulo: "Facturación",
+    sub: "Las facturas de Comercial, factura por factura, con el estado de cobro.",
   },
 };
 
@@ -142,6 +147,36 @@ const api = {
       .order("mes", { ascending: true });
     if (error) throw error;
     return data ?? [];
+  },
+
+  // --- Facturación (detalle factura por factura, con estado de cobro) ---
+  // v_facturas_finanzas (sql/facturas_finanzas.sql) es v_fin_ingresos más
+  // el estado calculado: cobrada (de comercial.facturas.cobro_fecha, un
+  // hecho real) / en_gestion (curación de Finanzas) / pendiente (default).
+  async listFacturas() {
+    const { data, error } = await supabase
+      .from("v_facturas_finanzas")
+      .select(
+        "factura_id, nro_factura, fecha_emision, mes, empresa_facturadora, nro_proyecto, proyecto, cliente_final, buque, centro_costo, moneda, importe, comision, neto, importe_usd, comision_usd, neto_usd, vencimiento, cobro_fecha, cobrada, en_gestion, estado_cobro"
+      )
+      .order("fecha_emision", { ascending: false });
+    if (error) throw error;
+    return data ?? [];
+  },
+
+  // Solo tiene sentido tocar "en gestión" en una factura que todavía no
+  // está cobrada — la pantalla ya se encarga de no ofrecer el control en
+  // ese caso, pero el upsert en sí no lo impide: si igual se llama sobre
+  // una cobrada, en_gestion se guarda pero v_facturas_finanzas la sigue
+  // mostrando "cobrada" porque esa columna gana siempre.
+  async setFacturaEnGestion(facturaId, enGestion) {
+    const { error } = await supabase
+      .from("facturas_finanzas")
+      .upsert(
+        { factura_id: facturaId, en_gestion: enGestion, updated_at: new Date().toISOString() },
+        { onConflict: "factura_id" }
+      );
+    if (error) throw error;
   },
 
   // El P&L completo: ingresos (de Comercial) + costos (de pl_movimientos,
@@ -2042,6 +2077,261 @@ function PagePL() {
 }
 
 // ============================================================
+// FACTURACIÓN — el detalle de Comercial, con el estado de cobro
+//
+// v_facturas_finanzas (sql/facturas_finanzas.sql) es v_fin_ingresos
+// (comercial.facturas + proyecto + buque + centro de costo, ya resuelto)
+// más el estado calculado. "Cobrada" es siempre comercial.facturas.cobro_fecha
+// —esta pantalla no la puede pisar—; lo único editable acá es marcar una
+// factura no cobrada como "en gestión de cobro".
+// ============================================================
+
+const ESTADO_COBRO_LABEL = {
+  pendiente: "Pendiente",
+  en_gestion: "En gestión de cobro",
+  cobrada: "Cobrada",
+};
+const ESTADO_COBRO_BADGE = {
+  pendiente: "b-gray",
+  en_gestion: "b-amber",
+  cobrada: "b-teal",
+};
+
+function PageFacturacion() {
+  const [facturas, setFacturas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState(null);
+  const [anio, setAnio] = useState(null);
+  const [estadoFiltro, setEstadoFiltro] = useState("todas");
+  const [guardandoId, setGuardandoId] = useState(null);
+
+  const load = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      setFacturas(await api.listFacturas());
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const anios = useMemo(() => {
+    const s = new Set(facturas.map((f) => String(f.mes).slice(0, 4)));
+    return [...s].sort((a, b) => Number(b) - Number(a));
+  }, [facturas]);
+
+  useEffect(() => {
+    if (anio === null && anios.length) setAnio(anios[0]);
+  }, [anio, anios]);
+
+  const delAnio = useMemo(
+    () => facturas.filter((f) => String(f.mes).slice(0, 4) === anio),
+    [facturas, anio]
+  );
+
+  const visibles = useMemo(
+    () => (estadoFiltro === "todas" ? delAnio : delAnio.filter((f) => f.estado_cobro === estadoFiltro)),
+    [delAnio, estadoFiltro]
+  );
+
+  const totales = useMemo(() => {
+    const facturado = delAnio.reduce((a, f) => a + Number(f.neto_usd || 0), 0);
+    const cobrado = delAnio
+      .filter((f) => f.estado_cobro === "cobrada")
+      .reduce((a, f) => a + Number(f.neto_usd || 0), 0);
+    const pendiente = facturado - cobrado;
+    return { facturado, cobrado, pendiente };
+  }, [delAnio]);
+
+  // Optimista, con rollback si falla el guardado — mismo patrón que
+  // cambiarSegmento en PageCentrosCosto.
+  async function cambiarGestion(f, enGestion) {
+    const previas = facturas;
+    setFacturas((lista) =>
+      lista.map((x) =>
+        x.factura_id === f.factura_id
+          ? { ...x, en_gestion: enGestion, estado_cobro: enGestion ? "en_gestion" : "pendiente" }
+          : x
+      )
+    );
+    setGuardandoId(f.factura_id);
+    setError(null);
+    try {
+      await api.setFacturaEnGestion(f.factura_id, enGestion);
+    } catch (err) {
+      setFacturas(previas);
+      setError(mensajeError(err));
+    } finally {
+      setGuardandoId(null);
+    }
+  }
+
+  const hoy = new Date().toISOString().slice(0, 10);
+
+  if (cargando) {
+    return (
+      <div className="card card-pad0">
+        <div className="empty">
+          <div className="empty-mono">Cargando</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!facturas.length) {
+    return (
+      <>
+        <Note tipo="err">{error}</Note>
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Sin facturas</div>
+            Esta pantalla lee <code>comercial.facturas</code>: en cuanto haya una
+            factura emitida en Comercial, aparece acá sola.
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Note tipo="err">{error}</Note>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-end",
+          flexWrap: "wrap",
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <div className="fg" style={{ maxWidth: 140 }}>
+          <label htmlFor="fac-anio">Año</label>
+          <select id="fac-anio" value={anio ?? ""} onChange={(e) => setAnio(e.target.value)}>
+            {anios.map((a) => (
+              <option key={a} value={a}>
+                {a}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="seg" role="group" aria-label="Estado de cobro">
+          {[
+            { id: "todas", label: "Todas" },
+            { id: "pendiente", label: "Pendiente" },
+            { id: "en_gestion", label: "En gestión" },
+            { id: "cobrada", label: "Cobrada" },
+          ].map((s) => (
+            <button
+              key={s.id}
+              className={estadoFiltro === s.id ? "on" : ""}
+              aria-pressed={estadoFiltro === s.id}
+              onClick={() => setEstadoFiltro(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="stats">
+        <div className="stat">
+          <div className="stat-label">Facturado {anio} · Neto USD Oficial</div>
+          <div className="stat-value sm">{fmtUSD(totales.facturado)}</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Cobrado</div>
+          <div className="stat-value sm">{fmtUSD(totales.cobrado)}</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Pendiente de cobro</div>
+          <div className="stat-value sm">{fmtUSD(totales.pendiente)}</div>
+        </div>
+      </div>
+
+      <div className="card card-pad0">
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Factura</th>
+                <th>Emisión</th>
+                <th>Proyecto</th>
+                <th>Buque / Centro</th>
+                <th>Cliente</th>
+                <th className="td-mono" style={{ textAlign: "right" }}>
+                  Neto USD
+                </th>
+                <th>Vencimiento</th>
+                <th>Estado de cobro</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibles.map((f) => {
+                const vencida = !f.cobrada && f.vencimiento && f.vencimiento < hoy;
+                return (
+                  <tr key={f.factura_id}>
+                    <td>{f.nro_factura || "—"}</td>
+                    <td className="td-mono">{f.fecha_emision}</td>
+                    <td>{f.nro_proyecto ? `${f.nro_proyecto} · ${f.proyecto}` : f.proyecto || "—"}</td>
+                    <td>{f.centro_costo || f.buque || "—"}</td>
+                    <td>{f.cliente_final || "—"}</td>
+                    <td className="td-mono" style={{ textAlign: "right" }}>
+                      {fmtUSD(f.neto_usd)}
+                    </td>
+                    <td className="td-mono">
+                      {f.vencimiento || "—"}
+                      {vencida && (
+                        <span className="badge b-red" style={{ marginLeft: 6 }}>
+                          Vencida
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {f.cobrada ? (
+                        <span className={`badge ${ESTADO_COBRO_BADGE.cobrada}`}>
+                          {ESTADO_COBRO_LABEL.cobrada}
+                        </span>
+                      ) : (
+                        <select
+                          aria-label={"Estado de cobro de " + (f.nro_factura || f.factura_id)}
+                          value={f.en_gestion ? "en_gestion" : "pendiente"}
+                          disabled={guardandoId === f.factura_id}
+                          onChange={(e) => cambiarGestion(f, e.target.value === "en_gestion")}
+                        >
+                          <option value="pendiente">{ESTADO_COBRO_LABEL.pendiente}</option>
+                          <option value="en_gestion">{ESTADO_COBRO_LABEL.en_gestion}</option>
+                        </select>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!visibles.length && (
+                <tr>
+                  <td colSpan={8} className="empty">
+                    Ninguna factura de {anio} está en estado "{ESTADO_COBRO_LABEL[estadoFiltro] ?? estadoFiltro}".
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ============================================================
 // TIPO DE CAMBIO — el oficial (BNA), traído solo
 //
 // Se llena vía cron (sql/tipo_cambio.sql llama a la Edge Function
@@ -3254,6 +3544,7 @@ export default function App() {
             {page === "tipo_cambio" && <PageTipoCambio />}
             {page === "carga_manual" && <PageCargaManual />}
             {page === "consolidado" && <PagePL />}
+            {page === "facturacion" && <PageFacturacion />}
           </div>
         </div>
       </div>
