@@ -9,9 +9,10 @@
 --   cobranza. Lo que falta no es cargar ingresos: es leerlos con la forma
 --   que necesita un P&L.
 --
---   Esta migracion no crea ninguna tabla. Son dos vistas de lectura sobre
---   Comercial: el detalle factura por factura, y el resumen mensual que es
---   el renglon de arriba del estado de resultados.
+--   Esta migracion no crea ninguna tabla nueva de Comercial. Son dos vistas
+--   de lectura: el detalle factura por factura, y el resumen mensual que es
+--   el renglon FACTURACION del P&L —el primero que se construye, ver
+--   sql/pl_ingresos.sql para el resto.
 --
 -- DEVENGADO, NO PERCIBIDO
 --
@@ -32,41 +33,73 @@
 --   despega de la primera. Estas vistas exponen los hechos —hay cobro, hay
 --   vencimiento— y nada mas.
 --
--- LA MONEDA: LEER ESTO
+-- LA MONEDA Y EL USD OFICIAL
 --
---   Una factura puede estar en USD o en ARS, y en la base NO hay tabla de
---   tipos de cambio: los TC del Excel viven en las filas 7 y 8 de cada
---   hoja, no en Postgres. Mientras eso siga asi, no se puede producir un
---   P&L en dolares a partir de facturas en pesos.
+--   Verificado el 2026-09-07: las 16 facturas que hay hoy estan todas en
+--   USD (ver memoria [[facturas-comercial-todas-en-usd]]). Pero una factura
+--   en ARS es cuestion de tiempo, asi que la vista ya expone tres columnas
+--   nuevas —importe_usd, comision_usd, neto_usd— convertidas cuando la
+--   moneda no es USD. Si la moneda es USD, la columna _usd es igual a la
+--   original: no hay conversion que hacer.
 --
---   Por eso el resumen mensual agrupa POR MONEDA. No es prolijidad: si
---   agrupara sin la moneda, sumaria pesos con dolares y daria un numero que
---   parece plata y no lo es. Con la moneda en el group by, ese error es
---   imposible de cometer.
+--   La conversion usa `public.fn_tc_oficial_mes(fecha_emision)`
+--   (sql/tipo_cambio.sql), UN SOLO TC POR MES —el de cierre, no el del dia
+--   exacto de la factura—. Decision de Silvestre, 2026-09-08: si dos
+--   facturas del mismo mes convirtieran cada una al TC de su propio dia, el
+--   P&L de un mes ya cerrado se releeria distinto cada vez, porque el TC de
+--   referencia dependeria de en que fecha exacta cayo cada factura. Con el
+--   TC de cierre de mes, todo lo que factura en febrero convierte igual, y
+--   el P&L de febrero deja de moverse en cuanto febrero termina.
 --
---   Cuando exista la tabla de TC se agrega una columna convertida. No la
---   creo ahora porque no se cuantas facturas hay en pesos ni cual de los
---   dos TC del Excel corresponde al ingreso, y una tabla vacia que nadie
---   llena es peor que no tenerla.
+--   Si algun dia hay una factura en ARS de un mes que todavia no tiene
+--   ningun TC cargado (fn_tc_oficial_mes devuelve null), la columna _usd da
+--   null en vez de un numero inventado. Un P&L con un null adentro se nota;
+--   uno con un TC de 1 no se nota y esta mal.
 --
--- NO DEPENDE DE NADA
+--   `moneda` sigue en el group by del resumen mensual a proposito: agrupar
+--   sin ella sumaria importes en ARS con importes en USD en la columna
+--   `importe`/`neto` (las NO convertidas). Las columnas `_usd` si se pueden
+--   sumar cruzando monedas, porque ya estan todas en la misma.
+--
+-- EL CENTRO DE COSTO: POR NOMBRE, NO POR FK
+--
+--   La decision de fondo —cual de los dos maestros de buque manda, ver
+--   [[dos-maestros-de-buque]]— sigue sin resolverse. Mientras tanto, el
+--   buque de la factura (texto libre, viene de la salida o si no del
+--   proyecto) se cruza por nombre contra `public.centros_costo` de PL
+--   Offshore. Hoy los dos buques que facturan —Atlantic Dama, Golondrina de
+--   Mar— matchean exacto. Un buque que no cruce (typo, o un centro que
+--   todavia no esta cargado) deja `centro_costo` en null: no se inventa un
+--   match aproximado.
+--
+-- NO DEPENDE DEL ESPEJO DE PROYECTOS
 --
 --   Ni del espejo ni de la 0038. Por eso expone `comercial_proyecto_id` —el
---   id que vive en Comercial— y no un id de public.proyectos, y el buque
---   como texto. Cuando la 0038 este aplicada se le puede sumar el centro de
---   costo: es un join mas, no un rediseno.
+--   id que vive en Comercial— y no un id de public.proyectos. Cuando la
+--   0038 este aplicada se le puede sumar el centro de costo por FK en lugar
+--   de por nombre: es un join que se reemplaza, no un rediseno.
 --
 --   EL ESPEJO NO CORRIO. Verificado contra la base el 2026-09-07:
---   public.proyectos NO tiene la columna comercial_proyecto_id, y sus tres
---   filas tienen origen = 'projects', ninguna viene de Comercial. Asi que el
---   join contra un id local todavia no existe como opcion.
+--   public.proyectos NO tiene la columna comercial_proyecto_id. No cambia
+--   una linea del SQL de abajo: estas vistas leen Comercial directo, asi
+--   que sirven igual con espejo o sin el.
 --
---     select column_name from information_schema.columns
---     where table_schema='public' and table_name='proyectos'
---       and column_name='comercial_proyecto_id';   -- hoy: cero filas
+-- PRIVILEGIOS
 --
---   No cambia una linea del SQL de abajo, y es justamente el punto: estas
---   vistas leen Comercial directo, asi que sirven igual con espejo o sin el.
+--   Como v_buque_dias, esta vista lee el schema `comercial`, al que el
+--   usuario de Finanzas no llega directo, y se apoya en que una vista
+--   corre con los permisos de su dueño. Expone importes y la comision del
+--   broker: es el punto de la vista, pero conviene tenerlo presente antes
+--   de darle acceso a alguien mas. La vista NO aplica la RLS de
+--   comercial.facturas: corre con los permisos del dueño y cualquier rol
+--   con select sobre la vista ve todas las facturas. Es lo que se quiere
+--   —Finanzas tiene que ver el total—, pero es una decision, no un
+--   descuido, y el linter de Supabase la va a listar como
+--   `security_definer_view`. Ese warning es esperado: no se arregla
+--   agregandole `security_invoker = true`, porque con eso la vista deja de
+--   poder leer `comercial` y sale vacia. Si alguna vez Finanzas tiene
+--   usuarios que no deban ver importes, la solucion es no darles select
+--   sobre la vista, no tocarla.
 --
 -- Correr desde Supabase -> SQL Editor -> Run, un bloque por vez.
 -- ============================================================
@@ -74,11 +107,6 @@
 
 -- ------------------------------------------------------------
 -- 1) ANTES QUE NADA: que hay cargado en facturas
---
--- No crea nada. Contesta lo que no puedo saber desde afuera: cuantas
--- facturas hay, en que monedas, de que fechas, y cuantas no apuntan a una
--- salida (que es lo que impide saber con que buque se hizo el trabajo
--- cuando el proyecto uso mas de uno).
 -- ------------------------------------------------------------
 select f.moneda,
        count(*)                                              as facturas,
@@ -95,29 +123,6 @@ order by f.moneda;
 
 -- ------------------------------------------------------------
 -- 2) El detalle: una fila por factura
---
--- Lo mismo que comercial.facturas_listado, pero del lado de Finanzas y con
--- el mes ya resuelto. Se define aparte en vez de leer aquella vista para no
--- atarse a su forma: facturas_listado hace `f.*`, asi que cualquier columna
--- nueva en la tabla le entra sola y le cambia el contrato sin aviso.
---
--- PRIVILEGIOS. Como v_buque_dias, esta vista lee el schema `comercial`, al
--- que el usuario de Finanzas no llega directo, y se apoya en que una vista
--- corre con los permisos de su duenio. A diferencia de aquella, aca si se
--- exponen importes y la comision del broker: es el punto de la vista, pero
--- conviene tenerlo presente antes de darle acceso a alguien mas.
---
--- Eso significa que la vista NO aplica la RLS de comercial.facturas: corre
--- con los permisos del dueno (`postgres` si se crea desde el SQL Editor) y
--- cualquier rol con select sobre la vista ve todas las facturas. Es lo que
--- se quiere —Finanzas tiene que ver el total— pero es una decision, no un
--- descuido, y el linter de Supabase la va a listar como
--- `security_definer_view`. Ese warning es esperado: no se arregla
--- agregandole `security_invoker = true`, porque con eso la vista deja de
--- poder leer `comercial` y sale vacia.
---
--- Si alguna vez Finanzas tiene usuarios que no deban ver importes, la
--- solucion no es tocar la vista: es no darles select sobre ella.
 -- ------------------------------------------------------------
 create or replace view public.v_fin_ingresos as
 select
@@ -143,12 +148,29 @@ select
   -- proyecto, que puede no ser el que trabajo.
   coalesce(o.buque, p.buque)  as buque,
 
+  -- Cruce por nombre contra el maestro de centros de costo de PL Offshore.
+  -- Null si el buque no matchea ninguno (typo, o un buque brokereado que
+  -- legitimamente no tiene centro de costo: ver
+  -- [[proyectos-sin-centro-de-costo]]).
+  cc.nombre                   as centro_costo,
+
   f.moneda,
   f.importe,
   f.comision,
   -- Lo que le queda a la empresa. Es el renglon que va al P&L: la comision
   -- del broker es un costo de la venta, no plata propia.
   f.importe - f.comision      as neto,
+
+  -- USD Oficial. Si ya esta en USD, la conversion es la identidad.
+  case when f.moneda = 'USD' then f.importe
+       else f.importe / nullif(public.fn_tc_oficial_mes(f.fecha_emision), 0)
+  end as importe_usd,
+  case when f.moneda = 'USD' then f.comision
+       else f.comision / nullif(public.fn_tc_oficial_mes(f.fecha_emision), 0)
+  end as comision_usd,
+  case when f.moneda = 'USD' then (f.importe - f.comision)
+       else (f.importe - f.comision) / nullif(public.fn_tc_oficial_mes(f.fecha_emision), 0)
+  end as neto_usd,
 
   f.vencimiento,
   f.cobro_fecha,
@@ -159,10 +181,13 @@ select
 
 from comercial.facturas f
 join comercial.proyectos p  on p.id = f.proyecto_id
-left join comercial.operaciones o on o.id = f.operacion_id;
+left join comercial.operaciones o on o.id = f.operacion_id
+left join public.centros_costo cc
+  on cc.empresa = 'Parana Logistica'
+ and lower(trim(cc.nombre)) = lower(trim(coalesce(o.buque, p.buque)));
 
 comment on view public.v_fin_ingresos is
-  'Una fila por factura de Comercial, con proyecto, salida y buque resueltos. Devengado por fecha_emision. Base del P&L.';
+  'Una fila por factura de Comercial, con proyecto, salida, buque y centro de costo (por nombre) resueltos, en moneda original y en USD Oficial. Devengado por fecha_emision. Base del P&L.';
 
 grant select on public.v_fin_ingresos to authenticated;
 
@@ -171,10 +196,7 @@ grant select on public.v_fin_ingresos to authenticated;
 -- 3) El resumen mensual
 --
 -- Es el renglon FACTURACION del P&L, abierto por los cortes que se van a
--- querer mirar: mes, buque, proyecto.
---
--- `moneda` esta en el group by a proposito. Ver la nota del encabezado: sin
--- ella, un sum() mezclaria pesos con dolares.
+-- querer mirar: mes, centro de costo, proyecto.
 -- ------------------------------------------------------------
 create or replace view public.v_fin_ingresos_mensual as
 select
@@ -182,71 +204,63 @@ select
   i.moneda,
   i.empresa_facturadora,
   i.buque,
+  i.centro_costo,
   i.comercial_proyecto_id,
   i.nro_proyecto,
   i.proyecto,
-  count(*)          as facturas,
-  sum(i.importe)    as importe,
-  sum(i.comision)   as comision,
-  sum(i.neto)       as neto
+  count(*)              as facturas,
+  sum(i.importe)        as importe,
+  sum(i.comision)        as comision,
+  sum(i.neto)            as neto,
+  sum(i.importe_usd)     as importe_usd,
+  sum(i.comision_usd)    as comision_usd,
+  sum(i.neto_usd)        as neto_usd
 from public.v_fin_ingresos i
-group by 1, 2, 3, 4, 5, 6, 7;
+group by 1, 2, 3, 4, 5, 6, 7, 8;
 
 comment on view public.v_fin_ingresos_mensual is
-  'v_fin_ingresos agregada por mes, moneda, buque y proyecto. Agrupa por moneda para que no se sumen pesos con dolares.';
+  'v_fin_ingresos agregada por mes, moneda, centro de costo y proyecto. Las columnas _usd ya estan en una sola moneda y se pueden sumar cruzando filas de moneda distinta; importe/comision/neto no.';
 
 grant select on public.v_fin_ingresos_mensual to authenticated;
 
 
 -- ------------------------------------------------------------
--- 4) Ver como quedo · el ingreso por buque y por mes
---
--- Esto es lo que hoy se lee en la fila FACTURACION NOMINAL de cada hoja del
--- Excel. Si los numeros no coinciden, o falta cargar facturas en Comercial
--- o la planilla tiene algo que la base no.
+-- 4) Ver como quedo · el ingreso en USD por centro de costo y por mes
 -- ------------------------------------------------------------
-select coalesce(buque, '(sin buque)') as buque,
-       moneda,
-       to_char(mes, 'YYYY-MM')        as mes,
-       sum(importe)                   as importe,
-       sum(comision)                  as comision,
-       sum(neto)                      as neto
+select coalesce(centro_costo, '(sin centro de costo)') as centro_costo,
+       to_char(mes, 'YYYY-MM')                          as mes,
+       sum(neto_usd)                                     as neto_usd
 from public.v_fin_ingresos_mensual
-group by 1, 2, 3
-order by 1, 2, 3;
+group by 1, 2
+order by 1, 2;
 
 
 -- ------------------------------------------------------------
 -- 5) El mismo dato por proyecto
---
--- El otro corte que pidio Silvestre. Ojo que esto es solo el ingreso: el
--- margen por proyecto necesita ademas los costos directos, que todavia no
--- estan.
 -- ------------------------------------------------------------
-select coalesce(nro_proyecto, '(sin numero)') as proyecto,
-       proyecto                               as nombre,
-       coalesce(buque, '(sin buque)')         as buque,
-       moneda,
-       min(mes)                               as primera_factura,
-       max(mes)                               as ultima_factura,
-       sum(facturas)                          as facturas,
-       sum(neto)                              as neto
+select coalesce(nro_proyecto, '(sin numero)')  as proyecto,
+       proyecto                                as nombre,
+       coalesce(centro_costo, '(sin centro)')  as centro_costo,
+       min(mes)                                as primera_factura,
+       max(mes)                                as ultima_factura,
+       sum(facturas)                           as facturas,
+       sum(neto_usd)                           as neto_usd
 from public.v_fin_ingresos_mensual
-group by 1, 2, 3, 4
-order by 8 desc;
+group by 1, 2, 3
+order by 7 desc;
 
 
 -- ------------------------------------------------------------
--- LO QUE FALTA PARA QUE ESTO SEA UN P&L
+-- LO QUE FALTA PARA QUE ESTO SEA UN P&L COMPLETO
 --
---   1. Tabla de tipos de cambio (mes, tc). Sin ella no hay P&L en dolares
---      si hay facturas en pesos, y no se puede comparar marzo con
---      noviembre. Los valores estan en las filas 7 y 8 de cada hoja del
---      Excel de costos; falta decidir cual de los dos TC aplica al ingreso.
---   2. Los costos. Hoy no hay ninguna fuente de costo en la base: los
+--   1. Los costos. Hoy no hay ninguna fuente de costo en la base: los
 --      cuatro modulos (Compras, Viveres, Reparaciones, HSQE) tienen
 --      pedidos, no comprobantes, y el 76% del costo de un buque —sueldos
---      embarcados, seguros, dique— no pasa por ninguno.
+--      embarcados, seguros, dique— no pasa por ninguno. Ver
+--      [[tres-universos-de-proyectos]]: la plata real esta en cost-tracker
+--      (repo de Fede), sin vinculo con public.proyectos.
+--   2. Decidir el cruce buque <-> centro de costo por FK en vez de por
+--      nombre (0038, [[dos-maestros-de-buque]]).
 --   3. La linea de tiempo del buque (sql/linea_tiempo_buque.sql) para poder
 --      imputar el costo que no trae proyecto.
 --
@@ -256,5 +270,5 @@ order by 8 desc;
 --   drop view if exists public.v_fin_ingresos;
 --
 -- Sin riesgo: son dos vistas de lectura, no crean ni modifican ninguna
--- tabla. Borrarlas no toca un solo dato de Comercial.
+-- tabla. Borrarlas no toca un solo dato de Comercial ni de centros_costo.
 -- ------------------------------------------------------------

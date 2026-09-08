@@ -1,7 +1,10 @@
 // ============================================================
 // INTEGRA · FINANZAS — PL Offshore
-// Dueño de la tabla maestra `proyectos`. Los demás módulos leen
-// la vista `v_proyectos_activos`.
+// Centros de costo, Consolidado y el Tablero de Control del área.
+// La pantalla de Proyectos se sacó de este módulo: la tabla maestra
+// `proyectos` y su curaduría (centro_costo, presupuesto_total,
+// visible_modulos) siguen en la base sin cambios, simplemente ya no
+// tienen interfaz acá. Ver sql/proyectos_desde_comercial.sql.
 // Estética: INTEGRA Brand Book v1.0 (misma que projects-app).
 // ============================================================
 
@@ -25,43 +28,6 @@ const EMPRESA_DISPLAY = "PL Offshore";
 // del valor con el que estan grabadas las filas (ver EMPRESA arriba).
 // Convencion tomada de sync-productos-xubio en compras-app.
 const EMPRESA_XUBIO = "pl_offshore";
-
-// La moneda y el estado ya no se eligen acá: vienen de Comercial. Quedan las
-// etiquetas, que son para mostrarlos.
-const ESTADO_LABEL = {
-  abierto: "Abierto",
-  en_curso: "En curso",
-  cerrado: "Cerrado",
-};
-
-const ESTADO_BADGE = {
-  abierto: "b-blue",
-  en_curso: "b-teal",
-  cerrado: "b-gray",
-};
-
-const FORM_VACIO = {
-  codigo: "",
-  nombre: "",
-  empresa: EMPRESA,
-  cliente: "",
-  centro_costo: "",
-  moneda: "USD",
-  presupuesto_total: "",
-  fecha_inicio: "",
-  fecha_fin: "",
-  descripcion: "",
-  estado_financiero: "abierto",
-};
-
-// Columnas que Finanzas escribe. Son dos, y son las únicas suyas.
-//
-// Todo proyecto nace en Comercial y llega acá por el espejo. Los campos que
-// vienen de allá —código, nombre, cliente, moneda, fechas, descripción,
-// estado— se muestran pero no se editan: escribirlos sería inútil, porque la
-// próxima edición en Comercial los vuelve a pisar. Lo que Finanzas sabe y
-// Comercial no es a qué buque se imputa y cuánto se espera gastar.
-const CAMPOS_ESCRITURA = ["centro_costo", "presupuesto_total"];
 
 // Las ocho empresas del grupo. La lista esta cerrada a proposito, igual que
 // el check de public.tablero_temas: un nombre mal tipeado ("Parana Port" sin
@@ -88,10 +54,25 @@ const EMPRESAS_GRUPO = [
 const PRIORIDADES = ["alta", "media", "baja"];
 const PRIORIDAD_LABEL = { alta: "Alta", media: "Media", baja: "Baja" };
 
+// Los módulos que pueden llegar a mostrar un centro de costo en su propio
+// desplegable. Lista cerrada, igual que EMPRESAS_GRUPO: coincide con el
+// check de sql/centros_costo_modulos.sql, y agregar uno nuevo es tocar los
+// dos lugares. Ninguno de los cinco está conectado todavía —es curaduría
+// para cuando Fede los enganche—, así que hoy no rompe nada tocar esta
+// lista.
+const MODULOS_CENTRO_COSTO = [
+  { id: "compras", label: "Compras" },
+  { id: "viveres", label: "Víveres" },
+  { id: "reparaciones", label: "Reparaciones" },
+  { id: "hsqe", label: "HSQE" },
+  { id: "comercial", label: "Comercial" },
+];
+
 const NAV = [
-  { id: "proyectos", label: "Proyectos" },
   { id: "centros", label: "Centros de costo" },
-  { id: "consolidado", label: "Consolidado" },
+  { id: "tipo_cambio", label: "Tipo de cambio" },
+  { id: "carga_manual", label: "Carga Manual" },
+  { id: "consolidado", label: "P&L" },
   { id: "tablero", label: "Tablero de Control" },
 ];
 
@@ -111,17 +92,21 @@ const SECCIONES = {
     titulo: "Tablero de Control",
     sub: "Los temas del área para la revisión semanal. Se agrupan por empresa, prioridad, responsable o fecha de vencimiento.",
   },
-  proyectos: {
-    titulo: "Proyectos",
-    sub: "Llegan de Comercial. Acá se les asigna centro de costo y presupuesto, y se decide cuáles pueden elegir los demás módulos.",
-  },
   centros: {
     titulo: "Centros de costo",
-    sub: "Lista maestra de centros de costo. Alimenta el campo Centro de costo del formulario de proyectos.",
+    sub: "Lista maestra de centros de costo de la empresa.",
+  },
+  tipo_cambio: {
+    titulo: "Tipo de cambio",
+    sub: "El oficial (BNA) que usa el P&L para convertir lo que no está en dólares. Se actualiza solo, todos los días.",
+  },
+  carga_manual: {
+    titulo: "Carga Manual",
+    sub: "Voyage Costs, Vessel OPEX, SG&A e ingresos de Astillero, a mano, hasta que se conecte una fuente automática (cost-tracker o la planilla).",
   },
   consolidado: {
-    titulo: "Consolidado",
-    sub: "Costos por módulo imputados al proyecto activo.",
+    titulo: "P&L",
+    sub: "La facturación de Comercial, en USD Oficial, por mes, centro de costo y proyecto.",
   },
 };
 
@@ -140,69 +125,95 @@ const api = {
     return data;
   },
 
-  async listProyectos() {
+  // --- P&L · ingresos -------------------------------------------------
+  // v_fin_ingresos_mensual (sql/ingresos_desde_comercial.sql) ya agrega por
+  // mes, centro de costo y proyecto. Acá solo se filtra por empresa y se
+  // trae todo: el corte por año, centro de costo o proyecto lo arma
+  // PagePL en el cliente, porque son pocas filas (una por mes x buque x
+  // proyecto x moneda) y así no hay que ir a buscar de nuevo cada vez que
+  // se cambia el filtro.
+  async listIngresosMensual() {
     const { data, error } = await supabase
-      .from("proyectos")
+      .from("v_fin_ingresos_mensual")
       .select(
-        "id, codigo, nombre, empresa, cliente, centro_costo, moneda, presupuesto_total, fecha_inicio, fecha_fin, descripcion, estado_financiero, visible_modulos, origen"
+        "mes, moneda, centro_costo, comercial_proyecto_id, nro_proyecto, proyecto, facturas, importe, comision, neto, importe_usd, comision_usd, neto_usd"
       )
-      .eq("empresa", EMPRESA)
-      .order("codigo", { ascending: true, nullsFirst: false });
+      .eq("empresa_facturadora", EMPRESA)
+      .order("mes", { ascending: true });
     if (error) throw error;
     return data ?? [];
   },
 
-  // No hay crearProyecto. Los proyectos nacen en Comercial y llegan por el
-  // espejo; Finanzas los recibe, les pone centro de costo y presupuesto, y
-  // decide cuáles ve el resto de los módulos.
-
-  async actualizarProyecto(id, form) {
+  // El P&L completo: ingresos (de Comercial) + costos (de pl_movimientos,
+  // vacía hasta que se carguen) en una sola forma — ver
+  // sql/pl_movimientos.sql. No filtra por empresa: hoy todo lo que hay en
+  // la base es Parana Logistica/PL Offshore (son el mismo valor), así que
+  // agregar el filtro no cambiaría nada y sí ataría la vista a esa
+  // columna, que v_pl_mensual ni siquiera expone.
+  async listPLMensual() {
     const { data, error } = await supabase
-      .from("proyectos")
-      .update(payload(form))
-      .eq("id", id)
-      .select()
-      .maybeSingle();
+      .from("v_pl_mensual")
+      .select("mes, segmento, centro_costo_id, centro_costo, categoria, subcategoria, monto_usd")
+      .order("mes", { ascending: true });
     if (error) throw error;
-    return data;
+    return data ?? [];
   },
 
-  async borrarProyecto(id) {
-    const { error } = await supabase.from("proyectos").delete().eq("id", id);
+  // --- Carga manual de costos -------------------------------------------
+  // pl_movimientos (sql/pl_movimientos.sql) es la tabla de la que sale
+  // todo el P&L salvo la Facturación. Hasta que exista una conexión real
+  // con cost-tracker o con la planilla, esto es lo único que la llena.
+
+  async listPlanDeCuentas() {
+    const { data, error } = await supabase
+      .from("plan_de_cuentas")
+      .select("id, cuenta, categoria, subcategoria")
+      .eq("activa", true)
+      .order("categoria", { ascending: true })
+      .order("cuenta", { ascending: true });
+    if (error) throw error;
+    return data ?? [];
+  },
+
+  // Trae de a lotes de `limite`: no hace falta paginar todavia (la tabla
+  // arranca vacía), pero el limite evita traer de más el día que tenga
+  // miles de filas.
+  async listPLMovimientos(limite = 300) {
+    const { data, error } = await supabase
+      .from("pl_movimientos")
+      .select("id, fecha, centro_costo_id, cuenta_id, moneda, monto, descripcion, fuente, created_at")
+      .order("fecha", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(limite);
+    if (error) throw error;
+    return data ?? [];
+  },
+
+  async crearPLMovimiento(mov) {
+    const { error } = await supabase.from("pl_movimientos").insert({
+      fecha: mov.fecha,
+      centro_costo_id: mov.centroCostoId,
+      cuenta_id: mov.cuentaId,
+      moneda: mov.moneda,
+      monto: Number(mov.monto),
+      descripcion: mov.descripcion?.trim() || null,
+    });
     if (error) throw error;
   },
 
-  // Publicar a los módulos.
-  //
-  // Antes esto era una RPC exclusiva (fin_set_proyecto_visible) porque solo
-  // podía haber UN proyecto publicado a la vez, y la función apagaba el
-  // anterior en la misma transacción. Ahora pueden estar publicados todos los
-  // que hagan falta —los otros módulos necesitan una lista para armar el
-  // desplegable de Proyecto, no un único valor— así que alcanza un update.
-  async marcarVisible(id) {
-    const { error } = await supabase
-      .from("proyectos")
-      .update({ visible_modulos: true })
-      .eq("id", id);
-    if (error) throw error;
-  },
-
-  async quitarVisible(id) {
-    const { error } = await supabase
-      .from("proyectos")
-      .update({ visible_modulos: false })
-      .eq("id", id);
+  async borrarPLMovimiento(id) {
+    const { error } = await supabase.from("pl_movimientos").delete().eq("id", id);
     if (error) throw error;
   },
 
   // --- Centros de costo ---------------------------------------
-  // Tabla maestra propia de Finanzas. Alimenta el campo Centro de costo.
+  // Tabla maestra propia de Finanzas.
   // La columna xubio_id queda reservada para mapear contra Xubio.
 
   async listCentrosCosto() {
     const { data, error } = await supabase
       .from("centros_costo")
-      .select("id, codigo, nombre, activo, xubio_id")
+      .select("id, codigo, nombre, activo, xubio_id, visible_modulos, segmento")
       .eq("empresa", EMPRESA)
       .order("nombre", { ascending: true });
     if (error) throw error;
@@ -215,13 +226,37 @@ const api = {
   },
 
   // Activa o desactiva varios centros en una sola consulta. El estado activo
-  // es una decision local: define que centros aparecen en el desplegable del
-  // formulario de proyectos, y Xubio no lo administra.
+  // es una decision local, y Xubio no lo administra.
   async setActivoCentros(ids, activo) {
     const { error } = await supabase
       .from("centros_costo")
       .update({ activo })
       .in("id", ids);
+    if (error) throw error;
+  },
+
+  // A que modulos se les muestra cada centro de costo. Es un array por fila
+  // (un centro puede estar publicado en Compras y no en Comercial), asi que
+  // no alcanza un UPDATE con un valor fijo como setActivoCentros: hace falta
+  // agregar o sacar UN elemento sin pisar el resto. Por eso es una RPC
+  // (sql/centros_costo_modulos.sql) y no un .update() directo.
+  async setModuloCentros(ids, modulo, mostrar) {
+    const { error } = await supabase.rpc("fn_centros_costo_set_modulo", {
+      p_ids: ids,
+      p_modulo: modulo,
+      p_mostrar: mostrar,
+    });
+    if (error) throw error;
+  },
+
+  // A que segmento del P&L pertenece (buque / astillero / corporativo).
+  // segmento=null es un estado valido a proposito (ver
+  // sql/plan_de_cuentas.sql): "todavia sin confirmar", no un error.
+  async setSegmentoCentro(id, segmento) {
+    const { error } = await supabase
+      .from("centros_costo")
+      .update({ segmento })
+      .eq("id", id);
     if (error) throw error;
   },
 
@@ -232,6 +267,35 @@ const api = {
     const { data, error } = await supabase.functions.invoke(
       "sync-centros-costo-xubio",
       { body: { empresa } }
+    );
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    return data;
+  },
+
+  // --- Tipo de cambio -------------------------------------------------
+  // public.tipo_cambio (sql/tipo_cambio.sql) se llena sola por cron todos
+  // los dias a las 18:05 ART. Esto es solo lectura del historial mas el
+  // disparador manual, para cuando alguien quiera forzar un refresco sin
+  // esperar al cron.
+
+  async listTipoCambio(limite = 400) {
+    const { data, error } = await supabase
+      .from("tipo_cambio")
+      .select("fecha, compra, venta, fuente, actualizado_en")
+      .order("fecha", { ascending: false })
+      .limit(limite);
+    if (error) throw error;
+    return data ?? [];
+  },
+
+  // backfill=true trae la serie historica completa desde que arranca el
+  // negocio (2026-01-01, ver supabase/functions/sync-tipo-cambio-oficial)
+  // en vez del oficial de hoy. Piso por fecha, asi que repetirlo no duplica.
+  async syncTipoCambioOficial(backfill = false) {
+    const { data, error } = await supabase.functions.invoke(
+      "sync-tipo-cambio-oficial",
+      { body: { backfill } }
     );
     if (error) throw error;
     if (data?.error) throw new Error(data.error);
@@ -293,31 +357,6 @@ const api = {
 // HELPERS
 // ============================================================
 
-function payload(form) {
-  const out = {};
-  for (const k of CAMPOS_ESCRITURA) {
-    const v = form?.[k];
-    if (k === "presupuesto_total") {
-      out[k] = v === "" || v === null || v === undefined ? null : Number(v);
-    } else if (k === "fecha_inicio" || k === "fecha_fin") {
-      out[k] = v || null;
-    } else {
-      out[k] = typeof v === "string" ? v.trim() || null : (v ?? null);
-    }
-  }
-  return out;
-}
-
-function fmtMoneda(valor, moneda) {
-  if (valor === null || valor === undefined || valor === "") return "—";
-  const n = Number(valor);
-  if (!Number.isFinite(n)) return "—";
-  return `${moneda ?? ""} ${n.toLocaleString("es-AR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`.trim();
-}
-
 function fmtFecha(iso) {
   if (!iso) return "—";
   const p = String(iso).slice(0, 10).split("-");
@@ -353,31 +392,14 @@ function baldeFecha(t) {
   return "Más adelante";
 }
 
-// Solo se valida lo que Finanzas escribe. El nombre y las fechas los valida
-// Comercial al crear el proyecto; acá llegan hechos.
-function validar(form) {
-  if (
-    form.presupuesto_total !== "" &&
-    form.presupuesto_total !== null &&
-    !Number.isFinite(Number(form.presupuesto_total))
-  )
-    return "El presupuesto tiene que ser un número.";
-  return null;
-}
-
 function mensajeError(err) {
   const msg = err?.message ?? String(err ?? "Error desconocido");
-  // Este índice permitía un solo proyecto publicado a la vez. Si el error
-  // sigue apareciendo, es que falta correr el SQL que lo elimina.
-  if (msg.includes("ux_proyectos_un_visible"))
-    return "La base todavía permite un solo proyecto publicado. Corré sql/proyectos_publicados.sql.";
-  if (msg.includes("ux_proyectos_codigo")) return "Ese código de proyecto ya existe.";
   if (msg.includes("ux_centros_costo_nombre"))
     return "Ya existe un centro de costo con ese nombre.";
   if (msg.includes("centros_costo"))
     return "Falta crear la tabla centros_costo en Supabase. Corré sql/centros_costo.sql.";
   if (msg.includes("violates foreign key"))
-    return "El proyecto tiene registros asociados. Cerralo en lugar de borrarlo.";
+    return "El registro tiene datos asociados.";
   return msg;
 }
 
@@ -503,21 +525,6 @@ tr.is-visible td{background:var(--surface2)}
 .td-actions{white-space:nowrap;text-align:right}
 .td-actions .btn+.btn{margin-left:8px}
 
-/*  LISTADO ANCHO
-    La lista de proyectos tiene diez columnas y no entraba sin barra
-    horizontal. Lo que sobraba no era el contenido sino el envase: los
-    encabezados en una sola linea (CENTRO DE COSTO pedia 160px para un texto
-    que ocupa 60), 12px de relleno a cada lado de diez celdas, y los dos
-    botones de la ultima columna con el aire de un formulario. Aca el relleno
-    se acorta, el encabezado parte de linea y los botones se ajustan. Mismo
-    tratamiento que .tabla-lista en Comercial.
-    Las celdas .td-mono siguen en nowrap: un importe o una fecha partidos en
-    dos renglones dejan de ser un numero.  */
-.tabla-lista th{white-space:normal;padding:8px 5px;line-height:1.3}
-.tabla-lista td{padding:10px 5px}
-.tabla-lista .btn-sm{padding:0 7px}
-.tabla-lista .td-actions .btn+.btn{margin-left:4px}
-
 /*  BADGES  */
 .badge{display:inline-flex;align-items:center;font-family:var(--mono);font-size:11px;font-weight:600;padding:3px 8px;border-radius:3px;white-space:nowrap;letter-spacing:.12em;text-transform:uppercase}
 .b-blue{background:#E6F1F2;color:#056D76;border:0}
@@ -562,10 +569,6 @@ tr.is-visible td{background:var(--surface2)}
 /* El foco es el outline amarillo del sistema, no un borde más grueso: así el
    campo no se mueve un pixel al enfocarse. */
 .fg input:focus,.fg select:focus,.fg textarea:focus{border-color:var(--navy);outline:2px solid var(--amarillo);outline-offset:2px}
-/* Los campos que se muestran pero no se escriben: casi todo el formulario de
-   proyecto, que llega hecho desde Comercial. */
-.fg input[readonly],.fg textarea[readonly]{background:var(--surface2);color:var(--muted);cursor:default}
-.fg input[readonly]:focus,.fg textarea[readonly]:focus{border-color:var(--border2);outline:none}
 .fg .hint{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;color:var(--muted2)}
 .form-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-bottom:16px}
 .form-section{position:relative;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.18em;color:var(--muted);text-transform:uppercase;margin:0 0 16px;padding-bottom:8px;border-bottom:1px solid var(--border)}
@@ -781,479 +784,6 @@ function LoginPage() {
           </div>
         </div>
       </div>
-    </>
-  );
-}
-
-// El formulario de un proyecto que vino de Comercial. Casi todo se muestra y
-// no se toca: lo que se edita acá son las dos columnas de Finanzas, centro de
-// costo y presupuesto. Los campos de Comercial se dejan a la vista igual,
-// porque para decidir el centro de costo hay que ver de qué proyecto se trata.
-function ProyectoForm({
-  form,
-  setForm,
-  onGuardar,
-  onCancelar,
-  guardando,
-  centros,
-  centrosOk,
-}) {
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  // Opciones del desplegable: los centros activos, mas el valor que el proyecto
-  // ya tenga cargado, para no perder un centro viejo o desactivado al editar.
-  const opcionesCentro = useMemo(() => {
-    const activos = (centros ?? []).filter((c) => c.activo).map((c) => c.nombre);
-    const actual = form.centro_costo?.trim();
-    if (actual && !activos.includes(actual)) return [actual, ...activos];
-    return activos;
-  }, [centros, form.centro_costo]);
-
-  return (
-    <div className="card">
-      <div className="form-section">Proyecto</div>
-
-      <Note tipo="info">
-        Este proyecto se administra en <strong>Comercial</strong>. Acá se
-        completan las dos columnas que son de Finanzas: el centro de costo y el
-        presupuesto. El resto se muestra como referencia y se corrige allá.
-      </Note>
-
-      <div className="form-grid">
-        <div className="fg">
-          <label htmlFor="f-codigo">Código</label>
-          <input id="f-codigo" value={form.codigo ?? ""} readOnly tabIndex={-1} />
-        </div>
-        <div className="fg" style={{ gridColumn: "span 2" }}>
-          <label htmlFor="f-nombre">Nombre del proyecto</label>
-          <input id="f-nombre" value={form.nombre ?? ""} readOnly tabIndex={-1} />
-        </div>
-
-        <div className="fg">
-          <label htmlFor="f-empresa">Empresa</label>
-          <input id="f-empresa" value={EMPRESA_DISPLAY} readOnly tabIndex={-1} />
-        </div>
-        <div className="fg">
-          <label htmlFor="f-cliente">Cliente</label>
-          <input id="f-cliente" value={form.cliente ?? ""} readOnly tabIndex={-1} />
-        </div>
-        <div className="fg">
-          <label htmlFor="f-cc">Centro de costo</label>
-          {centrosOk ? (
-            <select
-              id="f-cc"
-              value={form.centro_costo ?? ""}
-              onChange={set("centro_costo")}
-            >
-              <option value="">Sin asignar</option>
-              {opcionesCentro.map((n) => (
-                <option key={n} value={n}>
-                  {n}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              id="f-cc"
-              value={form.centro_costo ?? ""}
-              onChange={set("centro_costo")}
-              placeholder="Golondrina de Mar"
-            />
-          )}
-        </div>
-
-        <div className="fg">
-          <label htmlFor="f-moneda">Moneda</label>
-          <input id="f-moneda" value={form.moneda ?? "USD"} readOnly tabIndex={-1} />
-        </div>
-        <div className="fg">
-          <label htmlFor="f-ppto">Presupuesto total</label>
-          <input
-            id="f-ppto"
-            type="number"
-            step="0.01"
-            value={form.presupuesto_total ?? ""}
-            onChange={set("presupuesto_total")}
-          />
-          <div className="hint">Cuánto se espera gastar, no el valor vendido.</div>
-        </div>
-        <div className="fg">
-          <label htmlFor="f-estado">Estado</label>
-          <input
-            id="f-estado"
-            value={ESTADO_LABEL[form.estado_financiero] ?? form.estado_financiero ?? ""}
-            readOnly
-            tabIndex={-1}
-          />
-        </div>
-
-        <div className="fg">
-          <label htmlFor="f-ini">Inicio</label>
-          <input
-            id="f-ini"
-            type="date"
-            value={form.fecha_inicio ?? ""}
-            readOnly
-            tabIndex={-1}
-          />
-        </div>
-        <div className="fg">
-          <label htmlFor="f-fin">Fin</label>
-          <input
-            id="f-fin"
-            type="date"
-            value={form.fecha_fin ?? ""}
-            readOnly
-            tabIndex={-1}
-          />
-        </div>
-      </div>
-
-      <div className="fg">
-        <label htmlFor="f-desc">Descripción</label>
-        <textarea id="f-desc" value={form.descripcion ?? ""} readOnly tabIndex={-1} />
-      </div>
-
-      <div className="form-ftr">
-        <button className="btn btn-ghost" onClick={onCancelar} disabled={guardando}>
-          Cancelar
-        </button>
-        <button className="btn btn-primary" onClick={onGuardar} disabled={guardando}>
-          {guardando ? "Guardando..." : "Guardar cambios"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function TablaProyectos({ proyectos, onEditar, onBorrar, onToggleVisible, ocupado }) {
-  if (!proyectos.length) {
-    return (
-      <div className="card card-pad0">
-        <div className="empty">
-          <div className="empty-mono">Sin proyectos</div>
-          Los proyectos se crean en Comercial y aparecen acá solos. Cuando haya
-          uno, asignale centro de costo y presupuesto, y publicalo para que los
-          demás módulos puedan imputar contra él.
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="card card-pad0">
-      <div className="table-wrap">
-        <table className="tabla-lista">
-          <thead>
-            <tr>
-              <th>En módulos</th>
-              <th>Código</th>
-              <th>Proyecto</th>
-              <th>Cliente</th>
-              <th>Centro de costo</th>
-              <th>Presupuesto</th>
-              <th>Inicio</th>
-              <th>Fin</th>
-              <th>Estado</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {proyectos.map((p) => (
-              <tr key={p.id} className={p.visible_modulos ? "is-visible" : ""}>
-                <td>
-                  <button
-                    className={`badge badge-btn ${
-                      p.visible_modulos ? "b-amber" : "b-gray"
-                    }`}
-                    onClick={() => onToggleVisible(p)}
-                    disabled={ocupado}
-                    title={
-                      p.visible_modulos
-                        ? "Quitar de los módulos"
-                        : "Publicar a los módulos"
-                    }
-                  >
-                    {p.visible_modulos ? "Publicado" : "Oculto"}
-                  </button>
-                </td>
-                <td className="td-mono">{p.codigo ?? "—"}</td>
-                <td>{p.nombre}</td>
-                <td>{p.cliente ?? "—"}</td>
-                <td>{p.centro_costo ?? "—"}</td>
-                <td className="td-mono">{fmtMoneda(p.presupuesto_total, p.moneda)}</td>
-                <td className="td-mono">{fmtFecha(p.fecha_inicio)}</td>
-                <td className="td-mono">{fmtFecha(p.fecha_fin)}</td>
-                <td>
-                  <span
-                    className={`badge ${ESTADO_BADGE[p.estado_financiero] ?? "b-gray"}`}
-                  >
-                    {ESTADO_LABEL[p.estado_financiero] ?? p.estado_financiero ?? "—"}
-                  </span>
-                </td>
-                <td className="td-actions">
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => onEditar(p)}
-                    disabled={ocupado}
-                  >
-                    Editar
-                  </button>
-                  <button
-                    className="btn btn-danger btn-sm"
-                    onClick={() => onBorrar(p)}
-                    disabled={ocupado}
-                  >
-                    Borrar
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function PageProyectos({ formAbierto, setFormAbierto }) {
-  const [proyectos, setProyectos] = useState([]);
-  const [cargando, setCargando] = useState(true);
-  const [guardando, setGuardando] = useState(false);
-  const [error, setError] = useState(null);
-  const [ok, setOk] = useState(null);
-  const [editandoId, setEditandoId] = useState(null);
-  const [form, setForm] = useState(FORM_VACIO);
-  const [centros, setCentros] = useState([]);
-  const [centrosOk, setCentrosOk] = useState(false);
-
-  const load = useCallback(async () => {
-    setCargando(true);
-    setError(null);
-    try {
-      const data = await api.listProyectos();
-      setProyectos(data);
-      try {
-        setCentros(await api.listCentrosCosto());
-        setCentrosOk(true);
-      } catch {
-        // Si la tabla centros_costo no existe, el campo sigue siendo texto libre
-        // y el modulo funciona igual que antes.
-        setCentros([]);
-        setCentrosOk(false);
-      }
-    } catch (err) {
-      setError(mensajeError(err));
-    } finally {
-      setCargando(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // El form se puede cerrar desde el sidebar (el padre baja formAbierto).
-  // Sin esto, la siguiente edición abriría con los datos del proyecto anterior.
-  useEffect(() => {
-    if (!formAbierto) {
-      setEditandoId(null);
-      setForm(FORM_VACIO);
-    }
-  }, [formAbierto]);
-
-  const publicados = useMemo(
-    () => proyectos.filter((p) => p.visible_modulos),
-    [proyectos]
-  );
-
-  const stats = useMemo(() => {
-    const vigentes = proyectos.filter(
-      (p) => (p.estado_financiero ?? "abierto") !== "cerrado"
-    );
-    const porMoneda = {};
-    for (const p of vigentes) {
-      const n = Number(p.presupuesto_total);
-      if (!Number.isFinite(n)) continue;
-      const m = p.moneda ?? "USD";
-      porMoneda[m] = (porMoneda[m] ?? 0) + n;
-    }
-    return { total: proyectos.length, abiertos: vigentes.length, porMoneda };
-  }, [proyectos]);
-
-  function abrirEdicion(p) {
-    setForm({
-      codigo: p.codigo ?? "",
-      nombre: p.nombre ?? "",
-      empresa: p.empresa ?? EMPRESA,
-      cliente: p.cliente ?? "",
-      centro_costo: p.centro_costo ?? "",
-      moneda: p.moneda ?? "USD",
-      presupuesto_total: p.presupuesto_total ?? "",
-      fecha_inicio: p.fecha_inicio ? String(p.fecha_inicio).slice(0, 10) : "",
-      fecha_fin: p.fecha_fin ? String(p.fecha_fin).slice(0, 10) : "",
-      descripcion: p.descripcion ?? "",
-      estado_financiero: p.estado_financiero ?? "abierto",
-    });
-    setEditandoId(p.id);
-    setFormAbierto(true);
-    setError(null);
-    setOk(null);
-  }
-
-  function cerrarForm() {
-    setFormAbierto(false);
-    setEditandoId(null);
-    setForm(FORM_VACIO);
-  }
-
-  async function guardar() {
-    const problema = validar(form);
-    if (problema) {
-      setError(problema);
-      return;
-    }
-    setGuardando(true);
-    setError(null);
-    try {
-      await api.actualizarProyecto(editandoId, form);
-      setOk("Proyecto actualizado.");
-      cerrarForm();
-      await load();
-    } catch (err) {
-      setError(mensajeError(err));
-    } finally {
-      setGuardando(false);
-    }
-  }
-
-  async function borrar(p) {
-    const confirmado = window.confirm(
-      `¿Borrar el proyecto "${p.nombre}"?\n\nSi tiene tareas, requisiciones o registros asociados, la base lo va a rechazar.`
-    );
-    if (!confirmado) return;
-    setGuardando(true);
-    setError(null);
-    setOk(null);
-    try {
-      await api.borrarProyecto(p.id);
-      setOk("Proyecto borrado.");
-      await load();
-    } catch (err) {
-      setError(mensajeError(err));
-    } finally {
-      setGuardando(false);
-    }
-  }
-
-  async function toggleVisible(p) {
-    const previos = proyectos;
-    // Solo se toca la fila del botón: publicar un proyecto ya no despublica a
-    // los demás.
-    setProyectos((lista) =>
-      lista.map((x) =>
-        x.id === p.id ? { ...x, visible_modulos: !p.visible_modulos } : x
-      )
-    );
-    setGuardando(true);
-    setError(null);
-    setOk(null);
-    try {
-      if (p.visible_modulos) {
-        await api.quitarVisible(p.id);
-        setOk(`"${p.nombre}" ya no se ofrece en los otros módulos.`);
-      } else {
-        await api.marcarVisible(p.id);
-        setOk(`"${p.nombre}" ya se ofrece en los otros módulos.`);
-      }
-      await load();
-    } catch (err) {
-      setProyectos(previos);
-      setError(mensajeError(err));
-    } finally {
-      setGuardando(false);
-    }
-  }
-
-  const totalesTexto =
-    Object.keys(stats.porMoneda).length === 0
-      ? "—"
-      : Object.entries(stats.porMoneda)
-          .map(([m, v]) => fmtMoneda(v, m))
-          .join("  ·  ");
-
-  return (
-    <>
-      <Note tipo="err">{error}</Note>
-      <Note tipo="ok">{ok}</Note>
-
-      <div className="stats">
-        <div className="stat">
-          <div className="stat-label">Proyectos</div>
-          <div className="stat-value">{stats.total}</div>
-        </div>
-        <div className="stat">
-          <div className="stat-label">Vigentes</div>
-          <div className="stat-value">{stats.abiertos}</div>
-        </div>
-        <div className="stat">
-          <div className="stat-label">Presupuesto vigente</div>
-          <div className="stat-value sm">{totalesTexto}</div>
-        </div>
-        <div className="stat">
-          <div className="stat-label">Publicados en módulos</div>
-          <div className="stat-value">{publicados.length}</div>
-        </div>
-      </div>
-
-      <Note tipo={publicados.length ? "info" : "warn"}>
-        {publicados.length ? (
-          <>
-            {publicados.length === 1
-              ? "1 proyecto publicado"
-              : `${publicados.length} proyectos publicados`}{" "}
-            para los otros módulos:{" "}
-            <strong>
-              {publicados.map((p) => p.codigo ?? p.nombre).join("  ·  ")}
-            </strong>
-            . Cada módulo tiene que leer esta lista para poder ofrecerla en su
-            desplegable de Proyecto; por ahora ninguno lo hace.
-          </>
-        ) : (
-          <>
-            Ningún proyecto publicado. Los desplegables de Proyecto de los otros
-            módulos van a estar vacíos hasta que publiques al menos uno.
-          </>
-        )}
-      </Note>
-
-      {formAbierto && editandoId && (
-        <ProyectoForm
-          form={form}
-          setForm={setForm}
-          centros={centros}
-          centrosOk={centrosOk}
-          onGuardar={guardar}
-          onCancelar={cerrarForm}
-          guardando={guardando}
-        />
-      )}
-
-      {cargando ? (
-        <div className="card card-pad0">
-          <div className="empty">
-            <div className="empty-mono">Cargando</div>
-          </div>
-        </div>
-      ) : (
-        <TablaProyectos
-          proyectos={proyectos}
-          onEditar={abrirEdicion}
-          onBorrar={borrar}
-          onToggleVisible={toggleVisible}
-          ocupado={guardando}
-        />
-      )}
     </>
   );
 }
@@ -1953,15 +1483,1004 @@ function PageTablero() {
   );
 }
 
-function PageConsolidado() {
-  return (
-    <div className="card card-pad0">
-      <div className="empty">
-        <div className="empty-mono">Pendiente</div>
-        Se conecta cuando exista la vista <code>v_fin_movimientos</code>, que une
-        Compras, Víveres, Reparaciones y HSQE contra el proyecto activo.
+// ============================================================
+// P&L — el ingreso de Comercial, leído como estado de resultados
+//
+// Primer renglón nada más: FACTURACIÓN. El costo (Compras, Víveres,
+// Reparaciones, HSQE, y sobre todo lo que hoy vive en cost-tracker, que es
+// donde está la plata real) se suma más adelante, como renglones nuevos de
+// esta misma tabla.
+//
+// Todo en USD Oficial, sea cual sea la moneda de origen: v_fin_ingresos_mensual
+// ya convierte con el TC del día de la factura (sql/tipo_cambio.sql). Hoy no
+// hace falta —la facturación está 100% en USD— pero el costo va a llegar
+// mayormente en pesos, y la tabla no se puede rediseñar cada vez que entra
+// una moneda nueva.
+// ============================================================
+
+const MESES_LABEL = [
+  "Ene", "Feb", "Mar", "Abr", "May", "Jun",
+  "Jul", "Ago", "Sep", "Oct", "Nov", "Dic",
+];
+
+// Negativos entre paréntesis: convención contable, y ademas es lo único
+// que deja distinguir a simple vista un RESULTADO FINANCIERO negativo de
+// uno positivo en una grilla densa de números.
+function fmtUSD(n, decimales = 0) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  const s = Math.abs(v).toLocaleString("es-AR", {
+    minimumFractionDigits: decimales,
+    maximumFractionDigits: decimales,
+  });
+  return v < 0 ? `(${s})` : s;
+}
+
+// La cascada de cada segmento: que categorías de plan_de_cuentas entran en
+// cada renglón, y donde va un subtotal. No hace falta decir si cada
+// renglón suma o resta: monto_usd ya viene con el signo real (positivo
+// ingreso, negativo costo, tal cual lo carga Xubio o Carga Manual), así
+// que un subtotal es sencillamente la suma acumulada de los renglones de
+// arriba. Ver sql/plan_de_cuentas.sql y sql/pl_movimientos.sql — categoria
+// es la misma palabra en las dos puntas.
+const CASCADA_BUQUE = [
+  { label: "FACTURACIÓN",                  categorias: ["ingreso"] },
+  { label: "Costos Variables de Viaje",    categorias: ["costo_variable"] },
+  { label: "Costo Embarcados",             categorias: ["costo_embarcados"],   subtotal: "CONTRIBUCIÓN MARGINAL" },
+  { label: "Costos Semifijos",             categorias: ["costo_semifijo"] },
+  { label: "Costos Fijos",                 categorias: ["costo_fijo"] },
+  { label: "Costo Dique",                  categorias: ["costo_dique"],        subtotal: "RESULTADO OPERATIVO" },
+  { label: "Otros Ingresos No Operativos", categorias: ["otros_no_operativo"], subtotal: "RESULTADO FINANCIERO" },
+];
+const CASCADA_ASTILLERO = [
+  { label: "INGRESOS ASTILLERO", categorias: ["ingreso_astillero"] },
+  {
+    label: "Costos Astillero",
+    categorias: ["costo_variable", "costo_embarcados", "costo_semifijo", "costo_fijo", "otros_no_operativo", "financiero"],
+    subtotal: "RESULTADO ASTILLERO",
+  },
+];
+const CASCADA_CORPORATIVO = [
+  { label: "Gastos de Administración (SG&A)", categorias: ["sga", "financiero"], subtotal: "TOTAL SG&A" },
+];
+
+const SEGMENTOS_PL = [
+  // "consolidado" no tiene cascada propia: no es una categoria de
+  // plan_de_cuentas, es la suma del resultado final de los otros tres
+  // segmentos. Se arma aparte, ver cascadaConsolidado en PagePL.
+  { id: "consolidado", label: "Consolidado PL Offshore", cascada: null },
+  { id: "buque", label: "Flota", cascada: CASCADA_BUQUE },
+  { id: "astillero", label: "Astillero", cascada: CASCADA_ASTILLERO },
+  { id: "corporativo", label: "Corporativo / SG&A", cascada: CASCADA_CORPORATIVO },
+];
+
+// De filas planas (mes, categoria, monto_usd) a la cascada del segmento:
+// una fila por renglón con sus 12 meses, más una fila de subtotal donde la
+// cascada la pide. El subtotal es la suma acumulada tal cual —sin invertir
+// signo de nada— porque monto_usd ya es positivo o negativo según
+// corresponda desde el origen (ver nota de CASCADA_BUQUE más arriba).
+function construirCascada(cascada, filasAnio) {
+  const porCategoria = new Map();
+  for (const f of filasAnio) {
+    const idx = Number(String(f.mes).slice(5, 7)) - 1;
+    if (idx < 0 || idx > 11) continue;
+    if (!porCategoria.has(f.categoria)) porCategoria.set(f.categoria, Array(12).fill(0));
+    porCategoria.get(f.categoria)[idx] += Number(f.monto_usd || 0);
+  }
+
+  const filas = [];
+  const acumulado = Array(12).fill(0);
+  for (const linea of cascada) {
+    const meses = Array(12).fill(0);
+    for (const cat of linea.categorias) {
+      const arr = porCategoria.get(cat);
+      if (!arr) continue;
+      for (let i = 0; i < 12; i++) meses[i] += arr[i];
+    }
+    filas.push({ label: linea.label, meses, esSubtotal: false });
+    for (let i = 0; i < 12; i++) acumulado[i] += meses[i];
+    if (linea.subtotal) {
+      filas.push({ label: linea.subtotal, meses: [...acumulado], esSubtotal: true });
+    }
+  }
+  return filas;
+}
+
+function PagePL() {
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState(null);
+  const [anio, setAnio] = useState(null);
+  const [segmento, setSegmento] = useState("consolidado");
+  const [buque, setBuque] = useState(null); // null = consolidado de la flota
+
+  const load = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      setFilas(await api.listPLMensual());
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const anios = useMemo(() => {
+    const s = new Set(filas.map((f) => String(f.mes).slice(0, 4)));
+    return [...s].sort((a, b) => Number(b) - Number(a));
+  }, [filas]);
+
+  // El año por defecto es el más reciente con datos, no el calendario: si
+  // hoy es 2027 y la última factura es de 2026, abrir en 2027 mostraría una
+  // pantalla vacía sin ninguna pista de por qué.
+  useEffect(() => {
+    if (anio === null && anios.length) setAnio(anios[0]);
+  }, [anio, anios]);
+
+  const buquesDisponibles = useMemo(() => {
+    const s = new Set(
+      filas.filter((f) => f.segmento === "buque" && f.centro_costo).map((f) => f.centro_costo)
+    );
+    return [...s].sort((a, b) => a.localeCompare(b, "es"));
+  }, [filas]);
+
+  const filasDelSegmento = useMemo(
+    () =>
+      filas.filter(
+        (f) => f.segmento === segmento && (segmento !== "buque" || !buque || f.centro_costo === buque)
+      ),
+    [filas, segmento, buque]
+  );
+
+  const filasDelAnio = useMemo(
+    () => filasDelSegmento.filter((f) => String(f.mes).slice(0, 4) === anio),
+    [filasDelSegmento, anio]
+  );
+
+  // Para "consolidado" hace falta el año entero sin filtrar por segmento:
+  // se arma sumando el resultado final de los otros tres, no filtrando una
+  // categoria propia (no existe tal cosa como una fila con
+  // segmento='consolidado' en la base).
+  const filasAnioTotal = useMemo(
+    () => filas.filter((f) => String(f.mes).slice(0, 4) === anio),
+    [filas, anio]
+  );
+
+  const esConsolidado = segmento === "consolidado";
+
+  // Un centro de costo sin segmento (Centros de costo -> "Sin clasificar")
+  // no entra en NINGUNA pestaña, ni siquiera el Consolidado: sus filas
+  // tienen segmento=null y ninguna de las tres ramas de arriba las
+  // encuentra. Eso está bien mientras esos centros no tengan actividad,
+  // pero en cuanto entra plata real ahí queda invisible en todo el P&L sin
+  // que nada lo diga. Se avisa en vez de dejarlo esconderse.
+  const sinSegmento = useMemo(() => {
+    const filasSinSeg = filasAnioTotal.filter((f) => !f.segmento);
+    const total = filasSinSeg.reduce((a, f) => a + Number(f.monto_usd || 0), 0);
+    const centros = [...new Set(filasSinSeg.map((f) => f.centro_costo).filter(Boolean))];
+    return { total, centros };
+  }, [filasAnioTotal]);
+
+  // El consolidado que le faltaba a la pantalla: Σ Resultado Financiero de
+  // cada buque + Resultado de Astillero − Total SG&A de Corporativo. Es
+  // exactamente lo que hace la hoja CONSOLIDADO BNA del Excel, sumando los
+  // bloques por separado en vez de un renglon por categoria.
+  const cascadaConsolidado = useMemo(() => {
+    const deFlota = construirCascada(CASCADA_BUQUE, filasAnioTotal.filter((f) => f.segmento === "buque"));
+    const deAstillero = construirCascada(
+      CASCADA_ASTILLERO,
+      filasAnioTotal.filter((f) => f.segmento === "astillero")
+    );
+    const deCorporativo = construirCascada(
+      CASCADA_CORPORATIVO,
+      filasAnioTotal.filter((f) => f.segmento === "corporativo")
+    );
+
+    const cero = () => Array(12).fill(0);
+    const facturacionFlota = deFlota.find((f) => f.label === "FACTURACIÓN")?.meses ?? cero();
+    const resultadoFlota = [...deFlota].reverse().find((f) => f.esSubtotal)?.meses ?? cero();
+    const resultadoAstillero = [...deAstillero].reverse().find((f) => f.esSubtotal)?.meses ?? cero();
+    // Ya viene negativo: la cascada de Corporativo no tiene ningun renglon
+    // que sume, asi que su subtotal acumulado es directamente el gasto en
+    // negativo. Sumarlo tal cual, sin volver a invertir el signo.
+    const totalSGA = [...deCorporativo].reverse().find((f) => f.esSubtotal)?.meses ?? cero();
+
+    const neto = cero().map((_, i) => resultadoFlota[i] + resultadoAstillero[i] + totalSGA[i]);
+
+    return {
+      facturacionFlota,
+      filas: [
+        { label: "Resultado Financiero · Flota", meses: resultadoFlota, esSubtotal: false },
+        { label: "Resultado · Astillero", meses: resultadoAstillero, esSubtotal: false },
+        { label: "Total SG&A · Corporativo", meses: totalSGA, esSubtotal: false },
+        { label: "RESULTADO NETO CONSOLIDADO", meses: neto, esSubtotal: true },
+      ],
+    };
+  }, [filasAnioTotal]);
+
+  const seccion = SEGMENTOS_PL.find((s) => s.id === segmento) ?? SEGMENTOS_PL[0];
+  const cascada = useMemo(() => {
+    if (esConsolidado) return cascadaConsolidado.filas;
+    return construirCascada(seccion.cascada, filasDelAnio);
+  }, [esConsolidado, cascadaConsolidado, seccion, filasDelAnio]);
+
+  const facturacion = esConsolidado
+    ? { label: "Facturación Flota", meses: cascadaConsolidado.facturacionFlota }
+    : cascada.find((f) => f.label === "FACTURACIÓN" || f.label === "INGRESOS ASTILLERO");
+  const resultadoFinal = [...cascada].reverse().find((f) => f.esSubtotal);
+  const totalFacturacion = facturacion ? facturacion.meses.reduce((a, b) => a + b, 0) : 0;
+  const totalResultado = resultadoFinal ? resultadoFinal.meses.reduce((a, b) => a + b, 0) : 0;
+
+  // El aviso de "sin movimientos" mira el universo correcto segun la
+  // pestaña: para consolidado es todo el año (no hay una sola categoria
+  // propia que filtrar), para los demas es lo que ya filtraba antes.
+  const sinDatosDelSegmento = esConsolidado ? filasAnioTotal.length === 0 : filasDelAnio.length === 0;
+
+  if (cargando) {
+    return (
+      <div className="card card-pad0">
+        <div className="empty">
+          <div className="empty-mono">Cargando</div>
+        </div>
       </div>
-    </div>
+    );
+  }
+
+  if (!filas.length) {
+    return (
+      <>
+        <Note tipo="err">{error}</Note>
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Sin facturación cargada</div>
+            El P&L lee <code>comercial.facturas</code>: en cuanto haya una factura
+            emitida en Comercial, aparece acá sola.
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Note tipo="err">{error}</Note>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "flex-end",
+          flexWrap: "wrap",
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div className="fg" style={{ maxWidth: 140 }}>
+            <label htmlFor="pl-anio">Año</label>
+            <select id="pl-anio" value={anio ?? ""} onChange={(e) => setAnio(e.target.value)}>
+              {anios.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </div>
+          {segmento === "buque" && buquesDisponibles.length > 0 && (
+            <div className="fg" style={{ maxWidth: 220 }}>
+              <label htmlFor="pl-buque">Buque</label>
+              <select
+                id="pl-buque"
+                value={buque ?? ""}
+                onChange={(e) => setBuque(e.target.value || null)}
+              >
+                <option value="">Consolidado de la flota</option>
+                {buquesDisponibles.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+
+        <div className="seg" role="group" aria-label="Segmento del P&L">
+          {SEGMENTOS_PL.map((s) => (
+            <button
+              key={s.id}
+              className={segmento === s.id ? "on" : ""}
+              aria-pressed={segmento === s.id}
+              onClick={() => setSegmento(s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="stats">
+        {facturacion && (
+          <div className="stat">
+            <div className="stat-label">
+              {facturacion.label} {anio} · USD Oficial
+            </div>
+            <div className="stat-value sm">{fmtUSD(totalFacturacion)}</div>
+          </div>
+        )}
+        <div className="stat">
+          <div className="stat-label">{resultadoFinal?.label ?? "Resultado"}</div>
+          <div className="stat-value sm">{fmtUSD(totalResultado)}</div>
+        </div>
+        <div className="stat">
+          <div className="stat-label">Segmento</div>
+          <div className="stat-value sm">
+            {seccion.label}
+            {segmento === "buque" && buque ? ` · ${buque}` : ""}
+          </div>
+        </div>
+      </div>
+
+      {Math.abs(sinSegmento.total) > 0.5 && (
+        <Note tipo="warn">
+          {fmtUSD(sinSegmento.total)} USD de {anio} quedan FUERA de las cuatro
+          pestañas (Flota, Astillero, Corporativo y Consolidado) porque su
+          centro de costo todavía no está clasificado en Centros de costo:{" "}
+          {sinSegmento.centros.join(", ")}. No es un error de carga, es que
+          ese centro no tiene segmento asignado — andá a Centros de costo y
+          asignale uno para que aparezca.
+        </Note>
+      )}
+
+      {esConsolidado && (
+        <Note tipo="info">
+          El consolidado no tiene una cascada propia: suma el Resultado
+          Financiero de toda la flota (todos los buques juntos, sin importar
+          el filtro de la pestaña Flota) más el Resultado de Astillero, menos
+          el Total SG&A de Corporativo. Es la misma cuenta que hace la hoja
+          "CONSOLIDADO BNA" de la planilla.
+        </Note>
+      )}
+
+      {segmento === "corporativo" && (
+        <Note tipo="info">
+          Corporativo no tiene un ingreso propio: es el gasto de estructura
+          (Administración, oficina, flota de vehículos, impuestos...) que se
+          resta del resultado consolidado de la flota y de Astillero, no de
+          cada buque por separado.
+        </Note>
+      )}
+
+      {sinDatosDelSegmento && (
+        <Note tipo="warn">
+          Todavía no hay ningún movimiento de costo cargado para{" "}
+          {seccion.label.toLowerCase()} en {anio}
+          {segmento === "buque" ? " (la Facturación sí es real, viene de Comercial)" : ""}.
+          Las filas de abajo muestran la estructura del renglón, en "—", hasta
+          que se cargue el primer movimiento en <code>pl_movimientos</code>.
+        </Note>
+      )}
+
+      <div className="card card-pad0">
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{seccion.label.toUpperCase()} (USD)</th>
+                {MESES_LABEL.map((m) => (
+                  <th key={m} className="td-mono" style={{ textAlign: "right" }}>
+                    {m}
+                  </th>
+                ))}
+                <th className="td-mono" style={{ textAlign: "right" }}>
+                  TOTAL
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {cascada.map((f, i) => (
+                <tr
+                  key={i}
+                  style={
+                    f.esSubtotal
+                      ? { borderTop: "1px solid var(--border)", fontWeight: 700 }
+                      : undefined
+                  }
+                >
+                  <td>{f.label}</td>
+                  {f.meses.map((v, mi) => (
+                    <td key={mi} className="td-mono" style={{ textAlign: "right" }}>
+                      {v ? fmtUSD(v) : "—"}
+                    </td>
+                  ))}
+                  <td className="td-mono" style={{ textAlign: "right", fontWeight: f.esSubtotal ? 700 : 400 }}>
+                    {fmtUSD(f.meses.reduce((a, b) => a + b, 0))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ============================================================
+// TIPO DE CAMBIO — el oficial (BNA), traído solo
+//
+// Se llena vía cron (sql/tipo_cambio.sql llama a la Edge Function
+// sync-tipo-cambio-oficial todos los días a las 18:05 ART). Esta pantalla
+// es de lectura más un disparador manual: sirve para confirmar que el cron
+// corrió, y para forzar un refresco sin esperar a mañana si un valor vino
+// raro o si el cron se cayó un día.
+// ============================================================
+
+function PageTipoCambio() {
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [sincronizando, setSincronizando] = useState(false);
+  const [backfilleando, setBackfilleando] = useState(false);
+  const [error, setError] = useState(null);
+  const [ok, setOk] = useState(null);
+
+  const load = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      setFilas(await api.listTipoCambio());
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  function mensajeSyncError(err) {
+    const msg = err?.message ?? String(err);
+    if (/Failed to send a request|not found|404/i.test(msg)) {
+      return "Falta desplegar la Edge Function sync-tipo-cambio-oficial en Supabase. El código está en supabase/functions/.";
+    }
+    return msg;
+  }
+
+  async function sincronizar() {
+    setSincronizando(true);
+    setError(null);
+    setOk(null);
+    try {
+      const r = await api.syncTipoCambioOficial();
+      setOk(
+        `TC oficial del ${fmtFecha(r.fecha)}: compra ${fmtUSD(r.compra)} · venta ${fmtUSD(r.venta)}.`
+      );
+      await load();
+    } catch (err) {
+      setError(mensajeSyncError(err));
+    } finally {
+      setSincronizando(false);
+    }
+  }
+
+  // Trae la serie historica completa desde que arranca el negocio en la
+  // base (2026-01-01, sql/tipo_cambio.sql), no solo el dia de hoy. Ya corrio
+  // una vez (251 filas al 2026-09-08); este boton es para repetirlo si hace
+  // falta —por ejemplo si la fuente corrige un valor viejo— y no para uso
+  // diario, de ahi la confirmacion.
+  async function backfillear() {
+    const confirmado = window.confirm(
+      "Esto trae de nuevo TODO el histórico del TC oficial desde el 01/01/2026 y pisa lo que ya está cargado con esos mismos valores. Puede tardar unos segundos. ¿Continuar?"
+    );
+    if (!confirmado) return;
+    setBackfilleando(true);
+    setError(null);
+    setOk(null);
+    try {
+      const r = await api.syncTipoCambioOficial(true);
+      setOk(
+        `Histórico: ${r.escritas} día(s) cargado(s), de ${fmtFecha(r.desde)} a ${fmtFecha(r.hasta)}.`
+      );
+      await load();
+    } catch (err) {
+      setError(mensajeSyncError(err));
+    } finally {
+      setBackfilleando(false);
+    }
+  }
+
+  const hoy = filas[0] ?? null;
+  // El cron corre todos los días, fines de semana incluidos (dolarapi
+  // devuelve el último valor conocido). Si el más reciente cargado tiene más
+  // de 3 días, algo dejó de andar y conviene decirlo en vez de mostrar un
+  // número viejo como si fuera de hoy.
+  const diasDesdeUltimo = hoy ? diasHasta(hoy.fecha) : null;
+  const desactualizado = diasDesdeUltimo !== null && diasDesdeUltimo < -3;
+
+  return (
+    <>
+      <Note tipo="err">{error}</Note>
+      <Note tipo="ok">{ok}</Note>
+
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "flex-end",
+          gap: 10,
+          marginBottom: 16,
+        }}
+      >
+        <button
+          className="btn btn-ghost"
+          onClick={backfillear}
+          disabled={sincronizando || backfilleando}
+          title="Trae de nuevo todo el histórico desde el 01/01/2026 de api.argentinadatos.com"
+        >
+          {backfilleando ? "Trayendo histórico..." : "Traer histórico completo"}
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={sincronizar}
+          disabled={sincronizando || backfilleando}
+          title="Trae el oficial de hoy de dolarapi.com, sin esperar al cron de las 18:05"
+        >
+          {sincronizando ? "Sincronizando..." : "Sincronizar ahora"}
+        </button>
+      </div>
+
+      {!cargando && hoy && (
+        <div className="stats">
+          <div className="stat">
+            <div className="stat-label">Último TC cargado</div>
+            <div className="stat-value sm">{fmtFecha(hoy.fecha)}</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Compra</div>
+            <div className="stat-value">{fmtUSD(hoy.compra)}</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Venta (la que usa el P&L)</div>
+            <div className="stat-value">{fmtUSD(hoy.venta)}</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Días cargados</div>
+            <div className="stat-value">{filas.length}</div>
+          </div>
+        </div>
+      )}
+
+      {desactualizado && (
+        <Note tipo="warn">
+          El último TC es del {fmtFecha(hoy.fecha)}, hace {-diasDesdeUltimo} días.
+          El cron corre todos los días a las 18:05 ART — si pasaron más de un
+          par de días sin actualizarse, probá "Sincronizar ahora" y si vuelve
+          a fallar revisá los logs de la Edge Function en Supabase.
+        </Note>
+      )}
+
+      <Note tipo="info">
+        Se carga solo, todos los días, de{" "}
+        <a href="https://dolarapi.com/v1/dolares/oficial" target="_blank" rel="noreferrer">
+          dolarapi.com
+        </a>{" "}
+        (el mismo oficial que publica el BNA). El P&L convierte con VENTA, no
+        con compra.
+      </Note>
+
+      {cargando ? (
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Cargando</div>
+          </div>
+        </div>
+      ) : !filas.length ? (
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Sin tipo de cambio cargado</div>
+            Apretá "Sincronizar ahora" para traer el de hoy, o esperá al cron
+            de las 18:05 ART.
+          </div>
+        </div>
+      ) : (
+        <div className="card card-pad0">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th style={{ textAlign: "right" }}>Compra</th>
+                  <th style={{ textAlign: "right" }}>Venta</th>
+                  <th>Fuente</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f) => (
+                  <tr key={f.fecha}>
+                    <td className="td-mono">{fmtFecha(f.fecha)}</td>
+                    <td className="td-mono" style={{ textAlign: "right" }}>
+                      {fmtUSD(f.compra)}
+                    </td>
+                    <td className="td-mono" style={{ textAlign: "right" }}>
+                      {fmtUSD(f.venta)}
+                    </td>
+                    <td>{f.fuente}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ============================================================
+// CARGA MANUAL — lo que alimenta pl_movimientos hasta que haya una
+// fuente automática
+//
+// Todo el P&L salvo la Facturación (que viene sola de Comercial) sale de
+// acá: Voyage Costs, Vessel OPEX, SG&A e ingresos de Astillero. El día que
+// se conecte cost-tracker o se automatice la lectura de la planilla, esta
+// pantalla deja de ser necesaria para carga masiva pero sigue sirviendo
+// para ajustes puntuales.
+// ============================================================
+
+const CATEGORIA_LABEL = {
+  costo_variable: "Costos Variables de Viaje",
+  costo_embarcados: "Costo Embarcados",
+  costo_semifijo: "Costos Semifijos",
+  costo_fijo: "Costos Fijos",
+  costo_dique: "Costo Dique",
+  otros_no_operativo: "Otros Ingresos No Operativos",
+  financiero: "Financiero",
+  sga: "SG&A / Administración",
+  ingreso_astillero: "Ingresos Astillero",
+};
+
+const SEGMENTO_LABEL = {
+  buque: "Flota",
+  astillero: "Astillero",
+  corporativo: "Corporativo / SG&A",
+  excluido: "Excluido del P&L",
+};
+
+function hoyISO() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function PageCargaManual() {
+  const [centros, setCentros] = useState([]);
+  const [cuentas, setCuentas] = useState([]);
+  const [movimientos, setMovimientos] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState(null);
+  const [ok, setOk] = useState(null);
+  const [form, setForm] = useState({
+    fecha: hoyISO(),
+    centroCostoId: "",
+    cuentaId: "",
+    moneda: "ARS",
+    monto: "",
+    descripcion: "",
+  });
+
+  const load = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      const [c, cu, m] = await Promise.all([
+        api.listCentrosCosto(),
+        api.listPlanDeCuentas(),
+        api.listPLMovimientos(),
+      ]);
+      setCentros(c);
+      setCuentas(cu);
+      setMovimientos(m);
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setCargando(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const centrosPorId = useMemo(() => new Map(centros.map((c) => [c.id, c])), [centros]);
+  const cuentasPorId = useMemo(() => new Map(cuentas.map((c) => [c.id, c])), [cuentas]);
+
+  // Agrupados por segmento para el desplegable: asi se ve de entrada que
+  // "Sin clasificar" existe y por que no conviene cargarle nada todavia.
+  const gruposCentros = useMemo(() => {
+    const grupos = { buque: [], astillero: [], corporativo: [], excluido: [], sin_clasificar: [] };
+    for (const c of centros) {
+      if (!c.activo) continue;
+      (grupos[c.segmento ?? "sin_clasificar"] ??= []).push(c);
+    }
+    for (const lista of Object.values(grupos)) lista.sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+    return grupos;
+  }, [centros]);
+
+  const gruposCuentas = useMemo(() => {
+    const grupos = new Map();
+    for (const c of cuentas) {
+      if (!grupos.has(c.categoria)) grupos.set(c.categoria, []);
+      grupos.get(c.categoria).push(c);
+    }
+    return grupos;
+  }, [cuentas]);
+
+  const centroSeleccionado = form.centroCostoId ? centrosPorId.get(form.centroCostoId) : null;
+
+  function set(campo) {
+    return (e) => setForm((f) => ({ ...f, [campo]: e.target.value }));
+  }
+
+  function validar() {
+    if (!form.fecha) return "Falta la fecha.";
+    if (!form.centroCostoId) return "Falta el centro de costo.";
+    if (!form.cuentaId) return "Falta la cuenta.";
+    const n = Number(form.monto);
+    if (form.monto === "" || !Number.isFinite(n) || n <= 0)
+      return "El monto tiene que ser un número mayor a cero.";
+    return null;
+  }
+
+  async function guardar(e) {
+    e.preventDefault();
+    const msg = validar();
+    if (msg) {
+      setError(msg);
+      return;
+    }
+    setGuardando(true);
+    setError(null);
+    setOk(null);
+    try {
+      // Se tipea siempre un numero positivo, pero se guarda con el signo
+      // real: positivo si es un ingreso (Astillero), negativo si es
+      // cualquier otra categoria (costo, SG&A, financiero...). monto_usd
+      // tiene que quedar consistente sea que la fila venga de aca o de un
+      // import de Xubio, que ya trae el signo puesto.
+      const categoria = cuentasPorId.get(form.cuentaId)?.categoria;
+      const magnitud = Math.abs(Number(form.monto));
+      const montoConSigno = categoria === "ingreso_astillero" ? magnitud : -magnitud;
+      await api.crearPLMovimiento({ ...form, monto: montoConSigno });
+      setOk("Movimiento cargado.");
+      // Mantiene fecha, centro y cuenta: lo más probable es que sigan
+      // cargando varias líneas seguidas del mismo mes y del mismo lugar.
+      setForm((f) => ({ ...f, monto: "", descripcion: "" }));
+      await load();
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  async function borrar(m) {
+    const cuenta = cuentasPorId.get(m.cuenta_id)?.cuenta ?? "este movimiento";
+    const confirmado = window.confirm(`¿Borrar "${cuenta}" del ${fmtFecha(m.fecha)}?`);
+    if (!confirmado) return;
+    setGuardando(true);
+    setError(null);
+    try {
+      await api.borrarPLMovimiento(m.id);
+      setOk("Movimiento borrado.");
+      await load();
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  return (
+    <>
+      <Note tipo="err">{error}</Note>
+      <Note tipo="ok">{ok}</Note>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <form onSubmit={guardar}>
+          <div className="form-grid">
+            <div className="fg">
+              <label htmlFor="cm-fecha">Fecha</label>
+              <input
+                id="cm-fecha"
+                type="date"
+                value={form.fecha}
+                onChange={set("fecha")}
+                required
+              />
+            </div>
+            <div className="fg">
+              <label htmlFor="cm-centro">Centro de costo</label>
+              <select id="cm-centro" value={form.centroCostoId} onChange={set("centroCostoId")} required>
+                <option value="">Elegir...</option>
+                {gruposCentros.buque.length > 0 && (
+                  <optgroup label="Flota">
+                    {gruposCentros.buque.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nombre}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {gruposCentros.astillero.length > 0 && (
+                  <optgroup label="Astillero">
+                    {gruposCentros.astillero.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nombre}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {gruposCentros.corporativo.length > 0 && (
+                  <optgroup label="Corporativo / SG&A">
+                    {gruposCentros.corporativo.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nombre}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {gruposCentros.sin_clasificar.length > 0 && (
+                  <optgroup label="Sin clasificar (no aparece en el P&L)">
+                    {gruposCentros.sin_clasificar.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nombre}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {(gruposCentros.excluido ?? []).length > 0 && (
+                  <optgroup label="Excluido del P&L a propósito">
+                    {gruposCentros.excluido.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nombre}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+            <div className="fg">
+              <label htmlFor="cm-cuenta">Cuenta</label>
+              <select id="cm-cuenta" value={form.cuentaId} onChange={set("cuentaId")} required>
+                <option value="">Elegir...</option>
+                {[...gruposCuentas.entries()].map(([categoria, lista]) => (
+                  <optgroup key={categoria} label={CATEGORIA_LABEL[categoria] ?? categoria}>
+                    {lista.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.cuenta}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+            <div className="fg">
+              <label htmlFor="cm-moneda">Moneda</label>
+              <select id="cm-moneda" value={form.moneda} onChange={set("moneda")}>
+                <option value="ARS">ARS</option>
+                <option value="USD">USD</option>
+              </select>
+            </div>
+            <div className="fg">
+              <label htmlFor="cm-monto">Monto</label>
+              <input
+                id="cm-monto"
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.monto}
+                onChange={set("monto")}
+                required
+              />
+            </div>
+            <div className="fg">
+              <label htmlFor="cm-desc">Descripción (opcional)</label>
+              <input
+                id="cm-desc"
+                value={form.descripcion}
+                onChange={set("descripcion")}
+                placeholder="N° de factura, proveedor..."
+              />
+            </div>
+          </div>
+
+          {centroSeleccionado && !centroSeleccionado.segmento && (
+            <Note tipo="warn">
+              "{centroSeleccionado.nombre}" todavía no está clasificado (buque / astillero /
+              corporativo) en Centros de costo: este movimiento se guarda igual, pero no va a
+              aparecer en ningún renglón del P&L hasta que se clasifique.
+            </Note>
+          )}
+
+          <button className="btn btn-primary" type="submit" disabled={guardando}>
+            {guardando ? "Guardando..." : "Cargar movimiento"}
+          </button>
+        </form>
+      </div>
+
+      {cargando ? (
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Cargando</div>
+          </div>
+        </div>
+      ) : !movimientos.length ? (
+        <div className="card card-pad0">
+          <div className="empty">
+            <div className="empty-mono">Sin movimientos cargados</div>
+            Cargá el primero con el formulario de arriba: en cuanto se guarde, aparece
+            en el P&L en su renglón correspondiente.
+          </div>
+        </div>
+      ) : (
+        <div className="card card-pad0">
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Centro de costo</th>
+                  <th>Cuenta</th>
+                  <th style={{ textAlign: "right" }}>Monto</th>
+                  <th>Descripción</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {movimientos.map((m) => {
+                  const centro = centrosPorId.get(m.centro_costo_id);
+                  const cuenta = cuentasPorId.get(m.cuenta_id);
+                  return (
+                    <tr key={m.id}>
+                      <td className="td-mono">{fmtFecha(m.fecha)}</td>
+                      <td>
+                        {centro?.nombre ?? "—"}
+                        {centro?.segmento && (
+                          <span className="badge b-gray" style={{ marginLeft: 6 }}>
+                            {SEGMENTO_LABEL[centro.segmento]}
+                          </span>
+                        )}
+                      </td>
+                      <td>{cuenta?.cuenta ?? "—"}</td>
+                      <td className="td-mono" style={{ textAlign: "right" }}>
+                        {m.moneda} {fmtUSD(m.monto, 2)}
+                      </td>
+                      <td>{m.descripcion ?? "—"}</td>
+                      <td className="td-actions">
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => borrar(m)}
+                          disabled={guardando}
+                        >
+                          Borrar
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1974,6 +2493,7 @@ function PageCentrosCosto() {
   const [sincronizando, setSincronizando] = useState(false);
   const [filtro, setFiltro] = useState("");
   const [seleccion, setSeleccion] = useState([]);
+  const [moduloBulk, setModuloBulk] = useState(MODULOS_CENTRO_COSTO[0].id);
 
   const load = useCallback(async () => {
     setCargando(true);
@@ -2107,6 +2627,77 @@ function PageCentrosCosto() {
     }
   }
 
+  // Un módulo por vez, sobre lo seleccionado. La API ya arma el array sin
+  // pisar los otros módulos que cada fila tuviera marcados (ver
+  // fn_centros_costo_set_modulo), así que acá alcanza con avisarle cuáles
+  // ids y qué módulo.
+  async function aplicarModuloBulk(mostrar) {
+    if (!seleccionados.length) return;
+    setGuardando(true);
+    setError(null);
+    setOk(null);
+    try {
+      await api.setModuloCentros(seleccionados, moduloBulk, mostrar);
+      const label =
+        MODULOS_CENTRO_COSTO.find((m) => m.id === moduloBulk)?.label ?? moduloBulk;
+      setOk(
+        seleccionados.length +
+          (mostrar ? " centro(s) publicado(s) en " : " centro(s) sacado(s) de ") +
+          label +
+          "."
+      );
+      setSeleccion([]);
+      await load();
+    } catch (err) {
+      setError(mensajeError(err));
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  // Toggle de una sola fila y un solo módulo, para la corrección puntual
+  // (el lote de arriba es para la carga inicial). Optimista: si la RPC
+  // falla, vuelve al estado anterior.
+  async function toggleModulo(c, modulo) {
+    const mostrar = !(c.visible_modulos ?? []).includes(modulo);
+    const previos = centros;
+    setCentros((lista) =>
+      lista.map((x) =>
+        x.id === c.id
+          ? {
+              ...x,
+              visible_modulos: mostrar
+                ? [...(x.visible_modulos ?? []), modulo]
+                : (x.visible_modulos ?? []).filter((m) => m !== modulo),
+            }
+          : x
+      )
+    );
+    setError(null);
+    try {
+      await api.setModuloCentros([c.id], modulo, mostrar);
+    } catch (err) {
+      setCentros(previos);
+      setError(mensajeError(err));
+    }
+  }
+
+  // "" en el <select> es el estado "sin clasificar": se guarda como null,
+  // no como string vacio.
+  async function cambiarSegmento(c, segmento) {
+    const previos = centros;
+    setCentros((lista) =>
+      lista.map((x) => (x.id === c.id ? { ...x, segmento: segmento || null } : x))
+    );
+    setError(null);
+    try {
+      await api.setSegmentoCentro(c.id, segmento || null);
+    } catch (err) {
+      setCentros(previos);
+      setError(mensajeError(err));
+    }
+  }
+
   return (
     <>
       <Note tipo="err">{error}</Note>
@@ -2132,8 +2723,7 @@ function PageCentrosCosto() {
       {!cargando && centros.length > 0 && (
         <Note tipo="info">
           {activos} de {centros.length} centros activos. Activo significa que el
-          centro sigue existiendo en Xubio; los inactivos ya no están ahí. Solo
-          los activos aparecen en el formulario de proyectos.
+          centro sigue existiendo en Xubio; los inactivos ya no están ahí.
         </Note>
       )}
 
@@ -2175,6 +2765,49 @@ function PageCentrosCosto() {
         </div>
       )}
 
+      {!cargando && centros.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "flex-end",
+            flexWrap: "wrap",
+            marginBottom: 16,
+          }}
+        >
+          <div className="fg" style={{ maxWidth: 220 }}>
+            <label htmlFor="cc-modulo-bulk">Publicar en el módulo</label>
+            <select
+              id="cc-modulo-bulk"
+              value={moduloBulk}
+              onChange={(e) => setModuloBulk(e.target.value)}
+            >
+              {MODULOS_CENTRO_COSTO.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            className="btn btn-primary"
+            onClick={() => aplicarModuloBulk(true)}
+            disabled={guardando || !seleccionados.length}
+          >
+            Mostrar
+            {seleccionados.length ? " (" + seleccionados.length + ")" : ""}
+          </button>
+          <button
+            className="btn btn-ghost"
+            onClick={() => aplicarModuloBulk(false)}
+            disabled={guardando || !seleccionados.length}
+          >
+            Ocultar
+            {seleccionados.length ? " (" + seleccionados.length + ")" : ""}
+          </button>
+        </div>
+      )}
+
       {cargando ? (
         <div className="card card-pad0">
           <div className="empty">
@@ -2205,7 +2838,9 @@ function PageCentrosCosto() {
                   </th>
                   <th>Nombre</th>
                   <th>Estado</th>
+                  <th>Segmento</th>
                   <th>Xubio</th>
+                  <th>Módulos</th>
                   <th />
                 </tr>
               </thead>
@@ -2229,7 +2864,45 @@ function PageCentrosCosto() {
                         {c.activo ? "Activo" : "Inactivo"}
                       </span>
                     </td>
+                    <td>
+                      <select
+                        value={c.segmento ?? ""}
+                        onChange={(e) => cambiarSegmento(c, e.target.value)}
+                        disabled={guardando}
+                        aria-label={"Segmento de " + c.nombre}
+                        style={{ minWidth: 130 }}
+                      >
+                        <option value="">Sin clasificar</option>
+                        <option value="buque">Flota (buque)</option>
+                        <option value="astillero">Astillero</option>
+                        <option value="corporativo">Corporativo / SG&A</option>
+                        <option value="excluido">Excluido del P&L</option>
+                      </select>
+                    </td>
                     <td className="td-mono">{c.xubio_id ?? "—"}</td>
+                    <td>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {MODULOS_CENTRO_COSTO.map((m) => {
+                          const on = (c.visible_modulos ?? []).includes(m.id);
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              className={`badge badge-btn ${on ? "b-teal" : "b-gray"}`}
+                              onClick={() => toggleModulo(c, m.id)}
+                              disabled={guardando}
+                              title={
+                                on
+                                  ? `Sacar de ${m.label}`
+                                  : `Mostrar en ${m.label}`
+                              }
+                            >
+                              {m.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </td>
                     <td className="td-actions">
                       <button
                         className="btn btn-danger btn-sm"
@@ -2264,9 +2937,8 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [authLista, setAuthLista] = useState(false);
   const [perfil, setPerfil] = useState(null);
-  const [page, setPage] = useState("proyectos");
+  const [page, setPage] = useState("centros");
   const [navOpen, setNavOpen] = useState(true);
-  const [formAbierto, setFormAbierto] = useState(false);
 
   useEffect(() => {
     let vivo = true;
@@ -2338,7 +3010,7 @@ export default function App() {
 
   const usuario = perfil?.nombre ?? session.user?.email ?? "Usuario";
   const inicial = String(usuario).trim().charAt(0).toUpperCase() || "U";
-  const seccion = SECCIONES[page] ?? SECCIONES.proyectos;
+  const seccion = SECCIONES[page] ?? SECCIONES.centros;
 
   return (
     <>
@@ -2396,10 +3068,7 @@ export default function App() {
               <button
                 key={it.id}
                 className={`ni ${page === it.id ? "active" : ""}`}
-                onClick={() => {
-                  setPage(it.id);
-                  setFormAbierto(false);
-                }}
+                onClick={() => setPage(it.id)}
                 title={it.label}
               >
                 <span className="ni-num">{NAV_NUM[it.id]}</span>
@@ -2437,7 +3106,7 @@ export default function App() {
                 Portal
               </button>
               <span>/</span>
-              <button onClick={() => setPage("proyectos")}>Finanzas</button>
+              <button onClick={() => setPage("centros")}>Finanzas</button>
               <span>/</span>
               <span className="crumb-current">{seccion.titulo}</span>
             </div>
@@ -2446,20 +3115,15 @@ export default function App() {
                 <h1>{seccion.titulo}</h1>
                 {seccion.sub && <p>{seccion.sub}</p>}
               </div>
-              {/* No hay boton de alta: los proyectos nacen en Comercial. */}
             </div>
           </div>
 
           <div className="content">
             {page === "tablero" && <PageTablero />}
-            {page === "proyectos" && (
-              <PageProyectos
-                formAbierto={formAbierto}
-                setFormAbierto={setFormAbierto}
-              />
-            )}
             {page === "centros" && <PageCentrosCosto />}
-            {page === "consolidado" && <PageConsolidado />}
+            {page === "tipo_cambio" && <PageTipoCambio />}
+            {page === "carga_manual" && <PageCargaManual />}
+            {page === "consolidado" && <PagePL />}
           </div>
         </div>
       </div>
