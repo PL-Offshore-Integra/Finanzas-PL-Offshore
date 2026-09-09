@@ -538,6 +538,13 @@ a:not(.btn):hover{color:var(--amarillo)}
 .shell.is-collapsed .ni{justify-content:center;padding:9px 8px 9px 5px}
 .shell.is-collapsed .sidebar-foot-btn{justify-content:center}
 
+/* Modo presentación (solo en dev, ver App() más abajo): tapa los números
+   sin tocar el layout — el texto sigue ocupando su lugar, solo se ve
+   borroso. No aplica a .sidebar-nav ni a nada fuera de .main para que la
+   navegación siga siendo legible mientras se presenta. */
+.blur-datos .main .td-mono,
+.blur-datos .main .stat-value{filter:blur(7px);user-select:none}
+
 .main{display:flex;flex-direction:column;min-width:0}
 .pagehead{background:var(--surface);border-bottom:1px solid var(--border);padding:16px 24px;flex:0 0 auto}
 .crumb{display:flex;align-items:center;gap:8px;font:400 13px/1.2 var(--sans);color:var(--muted)}
@@ -3359,6 +3366,12 @@ export default function App() {
   const [perfil, setPerfil] = useState(null);
   const [page, setPage] = useState("centros");
   const [navOpen, setNavOpen] = useState(true);
+  // Modo presentación: bluerea los números para mostrar la pantalla sin
+  // exponer cifras reales (ej. en una reunión). Gateado a import.meta.env.DEV
+  // a propósito: Vite lo reemplaza por `false` en el build de producción, así
+  // que Vercel nunca sirve este botón — solo existe corriendo local (`npm run
+  // dev`), que es donde se piensa usar.
+  const [blurDatos, setBlurDatos] = useState(false);
 
   useEffect(() => {
     let vivo = true;
@@ -3464,7 +3477,7 @@ export default function App() {
         </div>
       </header>
 
-      <div className={`shell ${navOpen ? "" : "is-collapsed"}`}>
+      <div className={`shell ${navOpen ? "" : "is-collapsed"} ${blurDatos ? "blur-datos" : ""}`}>
         <nav className="sidebar">
           <div className="sidebar-header">
             <img
@@ -3498,6 +3511,22 @@ export default function App() {
           </div>
 
           <div className="sidebar-foot">
+            {import.meta.env.DEV && (
+              <button
+                className="sidebar-foot-btn"
+                onClick={() => setBlurDatos((v) => !v)}
+                title={blurDatos ? "Mostrar números" : "Ocultar números (modo presentación)"}
+              >
+                <span className="sidebar-foot-ico" aria-hidden="true">
+                  {blurDatos ? "◎" : "◉"}
+                </span>
+                {navOpen && (
+                  <span style={{ flex: 1, textAlign: "left" }}>
+                    {blurDatos ? "Mostrar números" : "Ocultar números"}
+                  </span>
+                )}
+              </button>
+            )}
             <button className="sidebar-foot-btn" onClick={() => setNavOpen((v) => !v)}>
               <span className="sidebar-foot-ico" aria-hidden="true">
                 {navOpen ? "«" : "»"}
