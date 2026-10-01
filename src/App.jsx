@@ -53,6 +53,7 @@ const EMPRESAS_GRUPO = [
 // capitalizadas en pantalla. El orden es el de la reunion: alta primero.
 const PRIORIDADES = ["alta", "media", "baja"];
 const PRIORIDAD_LABEL = { alta: "Alta", media: "Media", baja: "Baja" };
+const MESES_ABBR = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"];
 
 // Los módulos que pueden llegar a mostrar un centro de costo en su propio
 // desplegable. Lista cerrada, igual que EMPRESAS_GRUPO: coincide con el
@@ -206,6 +207,22 @@ const api = {
       .order("mes", { ascending: true });
     if (error) throw error;
     return data ?? [];
+  },
+
+  // --- KPIs del área (sql/kpis_finanzas.sql) ---------------------------
+  // v_fin_kpis es una sola fila: resultado neto (último mes con TC cargado
+  // y YTD), facturación YTD por estado de cobro y facturas vencidas sin
+  // gestionar. Se arma ahí, no acá, para no reimplementar la lógica del
+  // P&L ni de Facturación — esta función solo la lee.
+  async getKPIs() {
+    const { data, error } = await supabase
+      .from("v_fin_kpis")
+      .select(
+        "mes_ultimo_cerrado, resultado_neto_usd_ultimo_mes, resultado_neto_usd_ytd, facturado_cobrado_usd_ytd, facturado_pendiente_usd_ytd, facturado_en_gestion_usd_ytd, pct_cobrado_ytd, facturas_vencidas_sin_gestion, facturas_vencidas_sin_gestion_usd, margen_contribucion_usd_ytd, pct_margen_contribucion_ytd, multas_recargos_usd_ytd, costo_financiero_usd_ytd"
+      )
+      .maybeSingle();
+    if (error) throw error;
+    return data;
   },
 
   // --- Carga manual de costos -------------------------------------------
@@ -861,6 +878,7 @@ function LoginPage() {
 
 function PageTablero() {
   const [temas, setTemas] = useState([]);
+  const [kpis, setKpis] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState(null);
@@ -884,7 +902,9 @@ function PageTablero() {
     setCargando(true);
     setError(null);
     try {
-      setTemas(await api.listTemas());
+      const [temas, kpis] = await Promise.all([api.listTemas(), api.getKPIs()]);
+      setTemas(temas);
+      setKpis(kpis);
     } catch (err) {
       setError(mensajeError(err));
     } finally {
@@ -912,6 +932,15 @@ function PageTablero() {
     () => activos.filter((t) => baldeFecha(t) === "Vencido").length,
     [activos]
   );
+
+  // "YYYY-MM-DD" a mano, sin pasar por Date: new Date("2026-09-01") la toma
+  // como UTC medianoche, y en un huso horario negativo .toLocaleDateString
+  // la corre un día para atrás.
+  const mesKpiLabel = useMemo(() => {
+    const mes = kpis?.mes_ultimo_cerrado;
+    if (!mes) return "—";
+    return `${MESES_ABBR[Number(mes.slice(5, 7)) - 1]} ${mes.slice(0, 4)}`;
+  }, [kpis]);
 
   // Lo que se dibuja abajo. Los recuadros de arriba siguen contando sobre
   // `activos` y no sobre esto: si el filtro les cambiara el numero, apretar
@@ -1121,6 +1150,69 @@ function PageTablero() {
     <>
       <Note tipo="err">{error}</Note>
       <Note tipo="ok">{ok}</Note>
+
+      {/* Snapshot de sql/kpis_finanzas.sql (v_fin_kpis): resultado del
+          área, cobranza YTD y la alerta de vencidas sin gestionar. Son
+          cuatro tarjetas de solo lectura, no filtran nada de abajo —por
+          eso no son <button> como los recuadros de temas. */}
+      {kpis && (
+        <>
+          <div className="form-section">Resultado del área</div>
+          <div className="stats">
+            <div className="stat">
+              <div className="stat-label">Resultado neto · {mesKpiLabel}</div>
+              <div className="stat-value">USD {fmtUSD(kpis.resultado_neto_usd_ultimo_mes)}</div>
+              <div className="stat-value sm" style={{ color: "var(--muted)", fontWeight: 600 }}>
+                YTD: USD {fmtUSD(kpis.resultado_neto_usd_ytd)}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Facturación cobrada · YTD</div>
+              <div className="stat-value">
+                {kpis.pct_cobrado_ytd != null ? `${kpis.pct_cobrado_ytd}%` : "—"}
+              </div>
+              <div className="stat-value sm" style={{ color: "var(--muted)", fontWeight: 600 }}>
+                USD {fmtUSD(kpis.facturado_cobrado_usd_ytd)} cobrado
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">En gestión de cobro · YTD</div>
+              <div className="stat-value">USD {fmtUSD(kpis.facturado_en_gestion_usd_ytd)}</div>
+              <div className="stat-value sm" style={{ color: "var(--muted)", fontWeight: 600 }}>
+                Pendiente: USD {fmtUSD(kpis.facturado_pendiente_usd_ytd)}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Facturas vencidas sin gestionar</div>
+              <div className="stat-value">
+                {kpis.facturas_vencidas_sin_gestion}
+                {kpis.facturas_vencidas_sin_gestion > 0 && (
+                  <span className="badge b-red" style={{ marginLeft: 8, verticalAlign: "middle" }}>
+                    USD {fmtUSD(kpis.facturas_vencidas_sin_gestion_usd)}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Margen de Contribución · YTD</div>
+              <div className="stat-value">
+                {kpis.pct_margen_contribucion_ytd != null ? `${kpis.pct_margen_contribucion_ytd}%` : "—"}
+              </div>
+              <div className="stat-value sm" style={{ color: "var(--muted)", fontWeight: 600 }}>
+                USD {fmtUSD(kpis.margen_contribucion_usd_ytd)}
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Multas y Recargos · YTD</div>
+              <div className="stat-value">USD {fmtUSD(kpis.multas_recargos_usd_ytd)}</div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Costo Financiero · YTD</div>
+              <div className="stat-value">USD {fmtUSD(kpis.costo_financiero_usd_ytd)}</div>
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Los recuadros son botones: filtran el tablero de abajo. El que esta
           aplicado queda marcado, y volver a apretarlo lo suelta. "Temas
