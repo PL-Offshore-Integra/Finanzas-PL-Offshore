@@ -133,7 +133,8 @@ comment on column public.proyectos.comercial_proyecto_id is
 -- sql/ingresos_desde_comercial.sql: el warning `security_definer_view` del
 -- linter es esperado.
 -- ------------------------------------------------------------
-create or replace view public.v_fin_proyectos_pendientes as
+create or replace view public.v_fin_proyectos_pendientes
+  with (security_invoker = on) as
 select
   c.id                        as comercial_proyecto_id,
   c.nro_proyecto,

@@ -250,12 +250,12 @@ create policy buque_indisp_delete on public.buque_indisponibilidades
 -- operacion es lo que suele quedar sin actualizar. El paso 6 lista esos
 -- conflictos para que no queden tapados.
 --
--- PRIVILEGIOS. La vista lee el schema `comercial`, al que el usuario de
--- Finanzas no tiene acceso directo. Se apoya a proposito en que una vista
--- corre con los permisos de su duenio (no lleva security_invoker): expone
--- solo fechas, nombre y numero de proyecto, nada de valores ni tarifas.
+-- PRIVILEGIOS. La vista lee el schema `comercial` con los permisos de quien
+-- consulta (security_invoker): el rol `authenticated` tiene select sobre
+-- esas tablas. Ver la nota de PRIVILEGIOS en ingresos_desde_comercial.sql.
 -- ------------------------------------------------------------
-create or replace view public.v_buque_dias as
+create or replace view public.v_buque_dias
+  with (security_invoker = on) as
 with buques as (
   -- Sin filtrar por `activo`: esa columna es el espejo de existir en Xubio,
   -- no una curaduria local. Si el contador saca un centro de costo, no se
@@ -360,7 +360,8 @@ grant select on public.v_buque_dias to authenticated;
 -- de la vista diaria juntando dias consecutivos con el mismo estado y la
 -- misma operacion, asi las dos no se pueden contradecir.
 -- ------------------------------------------------------------
-create or replace view public.v_buque_linea_tiempo as
+create or replace view public.v_buque_linea_tiempo
+  with (security_invoker = on) as
 with marcado as (
   select d.*,
          row_number() over (partition by d.centro_costo_id

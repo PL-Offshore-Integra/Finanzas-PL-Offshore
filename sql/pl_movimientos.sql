@@ -89,7 +89,8 @@ grant select, insert, update, delete on public.pl_movimientos to authenticated;
 -- no le importa a nadie que ya seleccione por nombre (todo el codigo de
 -- Finanzas lo hace), asi que no es un problema real, solo estetico.
 -- ------------------------------------------------------------
-create or replace view public.v_fin_ingresos as
+create or replace view public.v_fin_ingresos
+  with (security_invoker = on) as
 select
   f.id                        as factura_id,
   f.nro_factura,
@@ -154,7 +155,8 @@ grant select on public.v_fin_ingresos to authenticated;
 -- ------------------------------------------------------------
 -- 3) Los costos (y el ingreso de Astillero) agregados por mes
 -- ------------------------------------------------------------
-create or replace view public.v_pl_costos_mensual as
+create or replace view public.v_pl_costos_mensual
+  with (security_invoker = on) as
 select
   date_trunc('month', m.fecha)::date as mes,
   m.moneda,
@@ -189,7 +191,8 @@ grant select on public.v_pl_costos_mensual to authenticated;
 -- final de la lista de columnas por la misma restriccion de
 -- `create or replace view` explicada arriba.
 -- ------------------------------------------------------------
-create or replace view public.v_fin_ingresos_mensual as
+create or replace view public.v_fin_ingresos_mensual
+  with (security_invoker = on) as
 select
   i.mes,
   i.moneda,
@@ -224,7 +227,8 @@ grant select on public.v_fin_ingresos_mensual to authenticated;
 -- group by, sea que la fila venga de una factura de Comercial o de un
 -- movimiento cargado a mano.
 -- ------------------------------------------------------------
-create or replace view public.v_pl_mensual as
+create or replace view public.v_pl_mensual
+  with (security_invoker = on) as
 select
   i.mes, cc.segmento, i.centro_costo_id, i.centro_costo,
   'ingreso'::text as categoria, 'Facturación'::text as subcategoria,

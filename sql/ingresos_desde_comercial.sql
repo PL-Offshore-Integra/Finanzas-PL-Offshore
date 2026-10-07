@@ -86,20 +86,19 @@
 --
 -- PRIVILEGIOS
 --
---   Como v_buque_dias, esta vista lee el schema `comercial`, al que el
---   usuario de Finanzas no llega directo, y se apoya en que una vista
---   corre con los permisos de su dueño. Expone importes y la comision del
---   broker: es el punto de la vista, pero conviene tenerlo presente antes
---   de darle acceso a alguien mas. La vista NO aplica la RLS de
---   comercial.facturas: corre con los permisos del dueño y cualquier rol
---   con select sobre la vista ve todas las facturas. Es lo que se quiere
---   —Finanzas tiene que ver el total—, pero es una decision, no un
---   descuido, y el linter de Supabase la va a listar como
---   `security_definer_view`. Ese warning es esperado: no se arregla
---   agregandole `security_invoker = true`, porque con eso la vista deja de
---   poder leer `comercial` y sale vacia. Si alguna vez Finanzas tiene
---   usuarios que no deban ver importes, la solucion es no darles select
---   sobre la vista, no tocarla.
+--   Esta vista lee el schema `comercial` y lleva `security_invoker = on`:
+--   corre con los permisos de quien consulta y aplica la RLS de
+--   comercial.facturas, operaciones y proyectos. Funciona porque el rol
+--   `authenticated` tiene select sobre esas tablas y sus politicas dejan
+--   ver todo a cualquier usuario con sesion. Expone importes y la comision
+--   del broker: si alguna vez Finanzas tiene usuarios que no deban verlos,
+--   el lugar para restringirlo es la RLS de comercial.facturas.
+--
+--   No sacarle `security_invoker`. Sin eso la vista corre con los permisos
+--   de su dueño, se saltea la RLS y el linter de Supabase la marca como
+--   error (`security_definer_view`). Hasta octubre de 2026 estaba asi y
+--   cualquiera, aun sin sesion, podia leer las facturas por la API.
+--   `create or replace view` sin el `with (...)` le borra la opcion.
 --
 -- Correr desde Supabase -> SQL Editor -> Run, un bloque por vez.
 -- ============================================================
@@ -124,7 +123,8 @@ order by f.moneda;
 -- ------------------------------------------------------------
 -- 2) El detalle: una fila por factura
 -- ------------------------------------------------------------
-create or replace view public.v_fin_ingresos as
+create or replace view public.v_fin_ingresos
+  with (security_invoker = on) as
 select
   f.id                        as factura_id,
   f.nro_factura,
@@ -198,7 +198,8 @@ grant select on public.v_fin_ingresos to authenticated;
 -- Es el renglon FACTURACION del P&L, abierto por los cortes que se van a
 -- querer mirar: mes, centro de costo, proyecto.
 -- ------------------------------------------------------------
-create or replace view public.v_fin_ingresos_mensual as
+create or replace view public.v_fin_ingresos_mensual
+  with (security_invoker = on) as
 select
   i.mes,
   i.moneda,

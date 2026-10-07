@@ -84,7 +84,8 @@
 -- ============================================================
 
 
-create or replace view public.v_fin_kpis as
+create or replace view public.v_fin_kpis
+  with (security_invoker = on) as
 with pl_mensual as (
   select
     mes,

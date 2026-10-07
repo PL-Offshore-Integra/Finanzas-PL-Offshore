@@ -73,7 +73,8 @@ grant select, insert, update on public.facturas_finanzas to authenticated;
 -- ------------------------------------------------------------
 -- 2) v_fin_ingresos + el estado de cobro calculado
 -- ------------------------------------------------------------
-create or replace view public.v_facturas_finanzas as
+create or replace view public.v_facturas_finanzas
+  with (security_invoker = on) as
 select
   i.*,
   coalesce(ff.en_gestion, false) as en_gestion,
